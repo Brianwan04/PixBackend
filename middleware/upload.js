@@ -2,19 +2,19 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 
-// Define upload directory and ensure it exists
-const UPLOAD_DIR = path.join(__dirname, '../../temp/uploads');
+// Define and initialize upload directory
+const UPLOAD_DIR = path.join(__dirname, '../temp/uploads');
 const initializeUploadDir = async () => {
   try {
     await fs.mkdir(UPLOAD_DIR, { recursive: true });
-    console.log(`Upload directory initialized at: ${UPLOAD_DIR}`);
+    console.log(`[Upload] Initialized directory: ${UPLOAD_DIR}`);
   } catch (error) {
-    console.error(`Failed to initialize upload directory: ${error.message}`);
+    console.error(`[Upload] Failed to initialize directory: ${error.message}`);
   }
 };
 initializeUploadDir();
 
-// Configure storage with unique filenames
+// Storage configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, UPLOAD_DIR);
@@ -25,23 +25,21 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter to accept only images
+// File filter for images only
 const fileFilter = (req, file, cb) => {
-  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
-  if (allowedMimes.includes(file.mimetype)) {
+  const validMimes = ['image/jpeg', 'image/png', 'image/webp'];
+  if (validMimes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error('Only JPEG, PNG, and WebP image files are allowed!'), false);
+    cb(new Error('Only JPEG, PNG, and WebP images are allowed'), false);
   }
 };
 
-// Multer configuration with limits
+// Multer instance with limits
 const upload = multer({
   storage,
   fileFilter,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  }
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
 module.exports = upload;

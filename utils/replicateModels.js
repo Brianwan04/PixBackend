@@ -4,27 +4,27 @@
 module.exports = {
   models: {
     backgroundRemover: {
-      id: "851-labs/background-remover:a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc",
+      id: "851-labs/background-remover",
       name: "Background Remover"
     },
     aiEnhancer: {
-      id: "tencentarc/vqfr:f9085ea5bf9c8f2d7e5c64564234ab41b5bcd8cd61a58b59a3dde5cbb487721a",
+      id: "tencentarc/vqfr",
       name: "VQFR Enhancer"
     },
     avatarCreator: {
-      id: "bytedance/pulid:43d309c37ab4e62361e5e29b8e9e867fb2dcbcec77ae91206a8d95ac5dd451a0",
+      id: "bytedance/pulid",
       name: "Pulid Avatar"
     },
     textToImage: {
-      id: "bytedance/sdxl-lightning-4step:6f7a773af6fc3e8de9d5a3c00be77c17308914bf67772726aff83496ba1e3bbe",
+      id: "bytedance/sdxl-lightning-4step",
       name: "SDXL Lightning"
     },
     imageUpscale: {
-      id: "sczhou/codeformer:cc4956dd26fa5a7185d5660cc9100fab1b8070a1d1654a8bb5eb6d443b020bb2",
+      id: "sczhou/codeformer",
       name: "CodeFormer Upscale"
     },
     aiArt: {
-      id: "fofr/become-image:8d0b076a2aff3904dfcec3253c778e0310a68f78483c4699c7fd800f3051d2b3",
+      id: "fofr/become-image",
       name: "Become Image"
     },
     bgGenerator: {

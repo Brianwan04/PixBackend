@@ -1,35 +1,33 @@
-const express = require('express');
-const upload = require('../middleware/upload');
-const { trackFileForCleanup } = require('../middleware/cleanup');
-const imageController = require('../controllers/imageController');
+const express = require("express");
+const upload = require("../middleware/upload");
+const { trackFileForCleanup } = require("../middleware/cleanup");
+const imageController = require("../controllers/imageController");
 
 const router = express.Router();
 
-// GET routes - Retrieve operations, styles, and health status
-router.get('/operations', (req, res) => {
+// GET routes
+router.get("/operations", (req, res) => {
   res.json({
     operations: [
-      'background_remover',
-      'enhancer', 
-      'magic_eraser',
-      'avatar_creator',
-      'text_to_image',
-      'upscale',
-      'style_transfer',
-      'mockup'
-    ]
+      "background_remover",
+      "enhancer",
+      "magic_eraser",
+      "avatar_creator",
+      "text_to_image",
+      "upscale",
+      "style_transfer",
+      "mockup",
+    ],
   });
 });
 
-router.get('/styles', imageController.getStyles);
-router.get('/health', imageController.healthCheck);
+router.get("/styles", imageController.getStyles);
+router.get("/health", imageController.healthCheck);
 
-// POST routes - Image processing endpoints with upload middleware where needed
-
-// Background Remover
+// POST routes
 router.post(
-  '/remove-background',
-  upload.single('image'),
+  "/remove-background",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
@@ -37,10 +35,9 @@ router.post(
   imageController.removeBackground
 );
 
-// AI Enhancer
 router.post(
-  '/enhance',
-  upload.single('image'),
+  "/enhance",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
@@ -48,10 +45,9 @@ router.post(
   imageController.enhanceImage
 );
 
-// Magic Eraser
 router.post(
-  '/magic-eraser',
-  upload.single('image'),
+  "/magic-eraser",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
@@ -59,10 +55,9 @@ router.post(
   imageController.magicEraser
 );
 
-// Avatar Creator
 router.post(
-  '/create-avatar',
-  upload.single('image'),
+  "/create-avatar",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
@@ -70,16 +65,11 @@ router.post(
   imageController.createAvatar
 );
 
-// Text to Image (no upload required)
-router.post(
-  '/text-to-image',
-  imageController.textToImage
-);
+router.post("/text-to-image", imageController.textToImage);
 
-// Image Upscale
 router.post(
-  '/upscale',
-  upload.single('image'),
+  "/upscale",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
@@ -87,10 +77,9 @@ router.post(
   imageController.upscaleImage
 );
 
-// Style Transfer
 router.post(
-  '/style-transfer',
-  upload.single('image'),
+  "/style-transfer",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
@@ -98,10 +87,9 @@ router.post(
   imageController.styleTransfer
 );
 
-// Mockup Generator
 router.post(
-  '/create-mockup',
-  upload.single('image'),
+  "/create-mockup",
+  upload.single("image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
