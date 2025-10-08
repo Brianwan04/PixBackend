@@ -3,7 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const Replicate = require('replicate');
 const { models } = require('../utils/replicateModels');
-const { sampleStyles } = require('../config/styles');
+const { sampleStyles } = require('../config/styles'); // Assume this exports an object of styles; define if missing
 require('dotenv').config();
 
 class ImageController {
@@ -13,18 +13,33 @@ class ImageController {
     });
   }
 
+  // Helper to extract URL from model output (handles string, array, object.url)
+  getOutputUrl = (output) => {
+    if (Array.isArray(output) && output.length > 0) {
+      const first = output[0];
+      return typeof first === 'string' ? first : (first.url || first);
+    } else if (typeof output === 'string') {
+      return output;
+    } else if (output && output.url) {
+      return output.url;
+    }
+    throw new Error('Unexpected output format from model');
+  };
+
   // Convert image to base64 for Replicate API
-  async imageToBase64(filePath) {
+  imageToBase64 = async (filePath) => {
     try {
+      const uploadDir = path.dirname(filePath);
+      await fs.mkdir(uploadDir, { recursive: true });
       const imageBuffer = await fs.readFile(filePath);
       return imageBuffer.toString('base64');
     } catch (error) {
       throw new Error(`Failed to read image file: ${error.message}`);
     }
-  }
+  };
 
   // Save processed image and return URL
-  async saveProcessedImage(imageUrl, prefix = 'processed') {
+  saveProcessedImage = async (imageUrl, prefix = 'processed') => {
     try {
       const imageResponse = await axios.get(imageUrl, { 
         responseType: 'arraybuffer',
@@ -34,7 +49,6 @@ class ImageController {
       const outputFilename = `${prefix}-${Date.now()}.png`;
       const outputPath = path.join('public/processed', outputFilename);
       
-      // Ensure directory exists
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
       await fs.writeFile(outputPath, imageResponse.data);
       
@@ -46,10 +60,10 @@ class ImageController {
     } catch (error) {
       throw new Error(`Failed to save processed image: ${error.message}`);
     }
-  }
+  };
 
   // 1. AI Background Remover
-  async removeBackground(req, res) {
+  removeBackground = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
@@ -60,37 +74,28 @@ class ImageController {
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.backgroundRemover.id,
-        {
-          input: {
-            image: imageDataUrl,
-            format: "png",
-            reverse: false,
-            threshold: 0,
-            background_type: "rgba"
-          }
+      const output = await this.replicate.run(models.backgroundRemover, {
+        input: {
+          image: imageDataUrl,
+          // Model-specific defaults; adjust per schema
+          format: req.body.format || "png",
+          alpha_matting: req.body.alpha_matting || false
         }
-      );
+      });
 
-      if (output && output.url) {
-        const savedImage = await this.saveProcessedImage(output.url, 'no-bg');
-        
-        // Track files for cleanup
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Background removed successfully',
-          downloadUrl: savedImage.url,
-          operation: 'background_remover'
-        });
-      } else {
-        throw new Error('Unexpected response from background removal service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'no-bg');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Background removed successfully',
+        downloadUrl: savedImage.url,
+        operation: 'background_remover'
+      });
     } catch (error) {
       console.error('Background removal error:', error);
       await this.cleanupOnError(req.file);
@@ -99,10 +104,10 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 2. AI Enhancer
-  async enhanceImage(req, res) {
+  enhanceImage = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
@@ -111,34 +116,28 @@ class ImageController {
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.aiEnhancer.id,
-        {
-          input: {
-            image: imageDataUrl,
-            aligned: false
-          }
+      const output = await this.replicate.run(models.aiEnhancer, {
+        input: {
+          image: imageDataUrl,
+          // Model-specific: scale factor, etc.
+          scale: parseInt(req.body.scale) || 2,
+          face_enhance: req.body.face_enhance !== 'false'
         }
-      );
+      });
 
-      if (output) {
-        // VQFR returns the enhanced image directly
-        const savedImage = await this.saveProcessedImage(output, 'enhanced');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Image enhanced successfully',
-          downloadUrl: savedImage.url,
-          operation: 'enhancer'
-        });
-      } else {
-        throw new Error('Unexpected response from enhancement service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'enhanced');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Image enhanced successfully',
+        downloadUrl: savedImage.url,
+        operation: 'enhancer'
+      });
     } catch (error) {
       console.error('Enhancement error:', error);
       await this.cleanupOnError(req.file);
@@ -147,49 +146,43 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 3. Magic Eraser (Object Removal)
-  async magicEraser(req, res) {
+  magicEraser = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
       }
 
-      const { prompt = "background" } = req.body;
+      const { prompt = "remove object", mask_data } = req.body; // Assume client sends mask if needed
 
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.magicEraser.id,
-        {
-          input: {
-            image: imageDataUrl,
-            prompt: prompt,
-            number_of_images: 1,
-            prompt_strength: 2
-          }
-        }
-      );
+      const input = {
+        image: imageDataUrl,
+        prompt: prompt,
+        // Model-specific: add mask if provided
+        mask: mask_data || null,
+        num_inference_steps: 20
+      };
 
-      if (output && output[0]) {
-        const savedImage = await this.saveProcessedImage(output[0].url, 'erased');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Object removed successfully',
-          downloadUrl: savedImage.url,
-          operation: 'magic_eraser'
-        });
-      } else {
-        throw new Error('Unexpected response from magic eraser service');
+      const output = await this.replicate.run(models.magicEraser, { input });
+
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'erased');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Object removed successfully',
+        downloadUrl: savedImage.url,
+        operation: 'magic_eraser'
+      });
     } catch (error) {
       console.error('Magic eraser error:', error);
       await this.cleanupOnError(req.file);
@@ -198,62 +191,44 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 4. AI Avatar Creator
-  async createAvatar(req, res) {
+  createAvatar = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
       }
 
-      const { 
-        prompt = "portrait, high quality, detailed face",
-        style = "digital art" 
-      } = req.body;
+      const { style = "digital art" } = req.body;
 
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.avatarCreator.id,
-        {
-          input: {
-            prompt: prompt,
-            cfg_scale: 1.2,
-            num_steps: 4,
-            image_width: 768,
-            num_samples: 1,
-            image_height: 1024,
-            output_format: "webp",
-            identity_scale: 0.8,
-            mix_identities: false,
-            output_quality: 80,
-            generation_mode: "fidelity",
-            main_face_image: imageDataUrl,
-            negative_prompt: "flaws in the eyes, flaws in the face, flaws, lowres, non-HDRi, low quality, worst quality, artifacts noise, text, watermark, glitch, deformed, mutated, ugly, disfigured, hands, low resolution, partially rendered objects, deformed or partially rendered eyes, deformed, deformed eyeballs, cross-eyed, blurry"
-          }
+      const output = await this.replicate.run(models.avatarCreator, {
+        input: {
+          image: imageDataUrl,
+          // Model-specific: style prompt, num outputs
+          prompt: `avatar in ${style} style, high quality`,
+          num_outputs: 1,
+          guidance_scale: 7.5
         }
-      );
+      });
 
-      if (output && output[0]) {
-        const savedImage = await this.saveProcessedImage(output[0].url, 'avatar');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Avatar created successfully',
-          downloadUrl: savedImage.url,
-          operation: 'avatar_creator',
-          style: style
-        });
-      } else {
-        throw new Error('Unexpected response from avatar creator service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'avatar');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Avatar created successfully',
+        downloadUrl: savedImage.url,
+        operation: 'avatar_creator',
+        style: style
+      });
     } catch (error) {
       console.error('Avatar creation error:', error);
       await this.cleanupOnError(req.file);
@@ -262,10 +237,10 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 5. Text to Image
-  async textToImage(req, res) {
+  textToImage = async (req, res) => {
     try {
       const { 
         prompt, 
@@ -278,41 +253,33 @@ class ImageController {
         return res.status(400).json({ error: 'Prompt is required for text to image' });
       }
 
-      const output = await this.replicate.run(
-        models.textToImage.id,
-        {
-          input: {
-            seed: Math.floor(Math.random() * 1000000),
-            width: parseInt(width),
-            height: parseInt(height),
-            prompt: prompt,
-            scheduler: "K_EULER",
-            num_outputs: 1,
-            guidance_scale: 0,
-            negative_prompt: negative_prompt,
-            num_inference_steps: 4
-          }
+      const output = await this.replicate.run(models.textToImage, {
+        input: {
+          prompt: prompt,
+          width: parseInt(width),
+          height: parseInt(height),
+          negative_prompt: negative_prompt,
+          // Model-specific: fast mode params
+          num_outputs: 1,
+          guidance_scale: 7.5,
+          num_inference_steps: 20
         }
-      );
+      });
 
-      if (output && output[0]) {
-        const savedImage = await this.saveProcessedImage(output[0].url, 'text-to-image');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Image generated successfully',
-          downloadUrl: savedImage.url,
-          operation: 'text_to_image',
-          prompt: prompt
-        });
-      } else {
-        throw new Error('Unexpected response from text to image service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'text-to-image');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Image generated successfully',
+        downloadUrl: savedImage.url,
+        operation: 'text_to_image',
+        prompt: prompt
+      });
     } catch (error) {
       console.error('Text to image error:', error);
       res.status(500).json({
@@ -320,10 +287,10 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 6. Image Upscale
-  async upscaleImage(req, res) {
+  upscaleImage = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
@@ -332,37 +299,29 @@ class ImageController {
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.imageUpscale.id,
-        {
-          input: {
-            image: imageDataUrl,
-            upscale: parseInt(req.body.scale) || 2,
-            face_upsample: true,
-            background_enhance: true,
-            codeformer_fidelity: 0.5
-          }
+      const output = await this.replicate.run(models.imageUpscale, {
+        input: {
+          image: imageDataUrl,
+          // Model-specific: scale, enhance
+          scale: parseInt(req.body.scale) || 4,
+          face_enhance: true
         }
-      );
+      });
 
-      if (output && output.url) {
-        const savedImage = await this.saveProcessedImage(output.url, 'upscaled');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Image upscaled successfully',
-          downloadUrl: savedImage.url,
-          operation: 'upscale',
-          scale: req.body.scale || 2
-        });
-      } else {
-        throw new Error('Unexpected response from upscale service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'upscaled');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Image upscaled successfully',
+        downloadUrl: savedImage.url,
+        operation: 'upscale',
+        scale: req.body.scale || 4
+      });
     } catch (error) {
       console.error('Upscale error:', error);
       await this.cleanupOnError(req.file);
@@ -371,54 +330,50 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 7. Style Transfer
-  async styleTransfer(req, res) {
+  styleTransfer = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
       }
 
-      const { style_prompt, style_image_url } = req.body;
+      const { style_key, custom_prompt } = req.body;
       
-      if (!style_prompt && !style_image_url) {
-        return res.status(400).json({ error: 'Style prompt or style image URL is required' });
+      if (!style_key && !custom_prompt) {
+        return res.status(400).json({ error: 'Style key or custom prompt is required' });
       }
+
+      const prompt = custom_prompt || (sampleStyles[style_key]?.prompt || "artistic style");
 
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.styleTransfer.id,
-        {
-          input: {
-            image: imageDataUrl,
-            prompt: style_prompt || "artistic style",
-            image_to_become: style_image_url || imageDataUrl, // Fallback to same image
-            number_of_images: 1,
-            prompt_strength: 2
-          }
+      const output = await this.replicate.run(models.styleTransfer, {
+        input: {
+          image: imageDataUrl,
+          prompt: prompt,
+          // Model-specific: guidance, steps
+          guidance_scale: 7.5,
+          num_inference_steps: 20
         }
-      );
+      });
 
-      if (output && output[0]) {
-        const savedImage = await this.saveProcessedImage(output[0].url, 'styled');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Style applied successfully',
-          downloadUrl: savedImage.url,
-          operation: 'style_transfer'
-        });
-      } else {
-        throw new Error('Unexpected response from style transfer service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'styled');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Style applied successfully',
+        downloadUrl: savedImage.url,
+        operation: 'style_transfer',
+        style: style_key || 'custom'
+      });
     } catch (error) {
       console.error('Style transfer error:', error);
       await this.cleanupOnError(req.file);
@@ -427,10 +382,10 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // 8. Mockup Generator
-  async createMockup(req, res) {
+  createMockup = async (req, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
@@ -441,40 +396,30 @@ class ImageController {
       const imageBase64 = await this.imageToBase64(req.file.path);
       const imageDataUrl = `data:${req.file.mimetype};base64,${imageBase64}`;
 
-      const output = await this.replicate.run(
-        models.mockupGenerator.id,
-        {
-          input: {
-            image: imageDataUrl,
-            bg_prompt: bg_prompt,
-            fast: true,
-            sync: true,
-            force_rmbg: false,
-            refine_prompt: true,
-            original_quality: false,
-            enhance_ref_image: true,
-            content_moderation: false
-          }
+      const output = await this.replicate.run(models.mockupGenerator, {
+        input: {
+          image: imageDataUrl,
+          bg_prompt: bg_prompt,
+          // Model-specific: fast mode, quality
+          fast: true,
+          refine_prompt: true,
+          enhance_ref_image: true
         }
-      );
+      });
 
-      if (output && output[0]) {
-        const savedImage = await this.saveProcessedImage(output[0].url, 'mockup');
-        
-        if (req.filesToCleanup) {
-          req.filesToCleanup.push(savedImage.path);
-        }
-        
-        res.json({
-          success: true,
-          message: 'Mockup created successfully',
-          downloadUrl: savedImage.url,
-          operation: 'mockup'
-        });
-      } else {
-        throw new Error('Unexpected response from mockup service');
+      const imageUrl = this.getOutputUrl(output);
+      const savedImage = await this.saveProcessedImage(imageUrl, 'mockup');
+      
+      if (req.filesToCleanup) {
+        req.filesToCleanup.push(savedImage.path);
       }
-
+      
+      res.json({
+        success: true,
+        message: 'Mockup created successfully',
+        downloadUrl: savedImage.url,
+        operation: 'mockup'
+      });
     } catch (error) {
       console.error('Mockup creation error:', error);
       await this.cleanupOnError(req.file);
@@ -483,17 +428,17 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // Get available styles
-  async getStyles(req, res) {
+  getStyles = async (req, res) => {
     try {
-      // You can define some preset styles
-      const styles = {
+      // Example preset styles; expand in config/styles.js
+      const styles = sampleStyles || {
         fantasy: { name: "Fantasy", prompt: "fantasy art, magical, ethereal" },
         cyberpunk: { name: "Cyberpunk", prompt: "cyberpunk, neon, futuristic" },
         anime: { name: "Anime", prompt: "anime style, Japanese animation" },
-        oil_painting: { name: "Oil Painting", prompt: "oil painting, brush strokes" }
+        painting: { name: "Painting", prompt: "oil painting, brush strokes" }
       };
       
       res.json({
@@ -507,10 +452,10 @@ class ImageController {
         message: error.message
       });
     }
-  }
+  };
 
   // Utility method for error cleanup
-  async cleanupOnError(file) {
+  cleanupOnError = async (file) => {
     if (file && file.path) {
       try {
         await fs.unlink(file.path);
@@ -518,12 +463,13 @@ class ImageController {
         console.error('Error cleaning up file:', cleanupError.message);
       }
     }
-  }
+  };
 
   // Health check
-  async healthCheck(req, res) {
+  healthCheck = async (req, res) => {
     try {
-      // Simple health check - if we can instantiate Replicate, we're good
+      // Test Replicate connection
+      await this.replicate.models.get('stability-ai/stable-diffusion'); // Simple API test
       res.json({ 
         status: 'healthy', 
         service: 'Replicate API',
@@ -536,7 +482,7 @@ class ImageController {
         error: error.message
       });
     }
-  }
+  };
 }
 
 module.exports = new ImageController();

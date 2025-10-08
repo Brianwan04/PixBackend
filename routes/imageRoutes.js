@@ -5,7 +5,7 @@ const imageController = require('../controllers/imageController');
 
 const router = express.Router();
 
-// GET routes
+// GET routes - Retrieve operations, styles, and health status
 router.get('/operations', (req, res) => {
   res.json({
     operations: [
@@ -24,7 +24,7 @@ router.get('/operations', (req, res) => {
 router.get('/styles', imageController.getStyles);
 router.get('/health', imageController.healthCheck);
 
-// POST routes - all image processing features
+// POST routes - Image processing endpoints with upload middleware where needed
 
 // Background Remover
 router.post(
@@ -70,7 +70,7 @@ router.post(
   imageController.createAvatar
 );
 
-// Text to Image (no file upload needed)
+// Text to Image (no upload required)
 router.post(
   '/text-to-image',
   imageController.textToImage
