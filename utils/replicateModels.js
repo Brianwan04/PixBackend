@@ -33,8 +33,11 @@ module.exports = {
     
     // Image Upscale - Using sczhou/codeformer (unpinned)
     imageUpscale: {
-      id: "sczhou/codeformer",
-      name: "CodeFormer Upscale"
+
+      id: "topazlabs/image-upscale",
+      name: "Topaz Image Upscale"
+      //id: "sczhou/codeformer",
+     // name: "CodeFormer Upscale"
     },
     
     // Style Transfer - Using stability-ai/stable-diffusion (pinned version)
