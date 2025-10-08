@@ -11,6 +11,7 @@ class ImageController {
     this.replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
   }
 
+  // Helper to get output URL
   getOutputUrl = (output) => {
     if (Array.isArray(output) && output.length > 0) {
       return output[0].url || output[0];
@@ -22,10 +23,19 @@ class ImageController {
     throw new Error("Invalid output format from Replicate");
   };
 
+  // Convert image to base64
   imageToBase64 = async (filePath) => {
     try {
       const dir = path.dirname(filePath);
       await fs.mkdir(dir, { recursive: true });
+      if (
+        !(await fs
+          .access(filePath)
+          .then(() => true)
+          .catch(() => false))
+      ) {
+        throw new Error("File not found");
+      }
       const buffer = await fs.readFile(filePath);
       return buffer.toString("base64");
     } catch (error) {
@@ -33,6 +43,7 @@ class ImageController {
     }
   };
 
+  // Save processed image
   saveProcessedImage = async (imageUrl, prefix = "processed") => {
     try {
       const response = await axios.get(imageUrl, {
@@ -50,13 +61,14 @@ class ImageController {
     }
   };
 
+  // 1. AI Background Remover
   removeBackground = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       console.log(`[BG Remove] Processing: ${req.file.filename}`);
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.backgroundRemover, {
+      const output = await this.replicate.run(models.backgroundRemover.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           format: "png",
@@ -82,12 +94,13 @@ class ImageController {
     }
   };
 
+  // 2. AI Enhancer
   enhanceImage = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.aiEnhancer, {
+      const output = await this.replicate.run(models.aiEnhancer.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           scale: 2,
@@ -113,12 +126,13 @@ class ImageController {
     }
   };
 
+  // 3. Magic Eraser
   magicEraser = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.magicEraser, {
+      const output = await this.replicate.run(models.magicEraser.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           prompt: "remove object",
@@ -144,12 +158,13 @@ class ImageController {
     }
   };
 
+  // 4. AI Avatar Creator
   createAvatar = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.avatarCreator, {
+      const output = await this.replicate.run(models.avatarCreator.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           prompt: "high quality avatar",
@@ -175,6 +190,7 @@ class ImageController {
     }
   };
 
+  // 5. Text to Image
   textToImage = async (req, res) => {
     try {
       const {
@@ -184,7 +200,7 @@ class ImageController {
         negative_prompt = "low quality",
       } = req.body;
       if (!prompt) return res.status(400).json({ error: "Prompt required" });
-      const output = await this.replicate.run(models.textToImage, {
+      const output = await this.replicate.run(models.textToImage.id, {
         input: { prompt, width, height, negative_prompt, num_outputs: 1 },
       });
       const saved = await this.saveProcessedImage(
@@ -207,12 +223,13 @@ class ImageController {
     }
   };
 
+  // 6. Image Upscale
   upscaleImage = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.imageUpscale, {
+      const output = await this.replicate.run(models.imageUpscale.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           scale: 2,
@@ -236,12 +253,13 @@ class ImageController {
     }
   };
 
+  // 7. Style Transfer
   styleTransfer = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.styleTransfer, {
+      const output = await this.replicate.run(models.styleTransfer.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           prompt: "artistic style",
@@ -267,12 +285,13 @@ class ImageController {
     }
   };
 
+  // 8. Mockup Generator
   createMockup = async (req, res) => {
     try {
       if (!req.file)
         return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const output = await this.replicate.run(models.mockupGenerator, {
+      const output = await this.replicate.run(models.mockupGenerator.id, {
         input: {
           image: `data:${req.file.mimetype};base64,${base64}`,
           bg_prompt: "professional",
@@ -298,6 +317,7 @@ class ImageController {
     }
   };
 
+  // Get available styles
   getStyles = async (req, res) => {
     try {
       res.json({
@@ -314,6 +334,7 @@ class ImageController {
     }
   };
 
+  // Cleanup on error
   cleanupOnError = async (file) => {
     if (file?.path) {
       try {
@@ -327,6 +348,7 @@ class ImageController {
     }
   };
 
+  // Health check
   healthCheck = async (req, res) => {
     try {
       await this.replicate.models.get("stability-ai/stable-diffusion");
