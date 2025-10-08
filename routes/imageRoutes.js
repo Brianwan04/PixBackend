@@ -1,6 +1,9 @@
 const express = require("express");
 const upload = require("../middleware/upload");
-const { trackFileForCleanup } = require("../middleware/cleanup");
+const {
+  trackFileForCleanup,
+  cleanupTrackedFiles,
+} = require("../utils/fileCleanup");
 const imageController = require("../controllers/imageController");
 
 const router = express.Router();
@@ -24,7 +27,7 @@ router.get("/operations", (req, res) => {
 router.get("/styles", imageController.getStyles);
 router.get("/health", imageController.healthCheck);
 
-// POST routes
+// POST routes with cleanup middleware
 router.post(
   "/remove-background",
   upload.single("image"),
@@ -32,7 +35,8 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.removeBackground
+  imageController.removeBackground,
+  cleanupTrackedFiles
 );
 
 router.post(
@@ -42,7 +46,8 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.enhanceImage
+  imageController.enhanceImage,
+  cleanupTrackedFiles
 );
 
 router.post(
@@ -52,7 +57,8 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.magicEraser
+  imageController.magicEraser,
+  cleanupTrackedFiles
 );
 
 router.post(
@@ -62,10 +68,11 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.createAvatar
+  imageController.createAvatar,
+  cleanupTrackedFiles
 );
 
-router.post("/text-to-image", imageController.textToImage);
+router.post("/text-to-image", imageController.textToImage, cleanupTrackedFiles);
 
 router.post(
   "/upscale",
@@ -74,7 +81,8 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.upscaleImage
+  imageController.upscaleImage,
+  cleanupTrackedFiles
 );
 
 router.post(
@@ -84,7 +92,8 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.styleTransfer
+  imageController.styleTransfer,
+  cleanupTrackedFiles
 );
 
 router.post(
@@ -94,7 +103,8 @@ router.post(
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();
   },
-  imageController.createMockup
+  imageController.createMockup,
+  cleanupTrackedFiles
 );
 
 module.exports = router;

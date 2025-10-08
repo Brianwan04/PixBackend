@@ -68,4 +68,38 @@ const scheduleCleanup = () => {
   }
 };
 
-module.exports = { scheduleCleanup, performCleanup };
+/**
+ * Middleware to track files for cleanup after processing.
+ * @param {string} filePath - Path to the file to track
+ * @returns {Function} Middleware function
+ */
+const trackFileForCleanup = (filePath) => (req, res, next) => {
+  if (!req.filesToCleanup) {
+    req.filesToCleanup = [];
+  }
+  req.filesToCleanup.push(filePath);
+  next();
+};
+
+/**
+ * Cleanup tracked files after response is sent.
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+const cleanupTrackedFiles = (req, res, next) => {
+  if (req.filesToCleanup) {
+    req.filesToCleanup.forEach(async (filePath) => {
+      try {
+        await fs.unlink(filePath);
+        console.log(`[Cleanup] Removed tracked file: ${filePath}`);
+      } catch (error) {
+        console.error(`[Cleanup] Failed to remove ${filePath}: ${error.message}`);
+      }
+    });
+    delete req.filesToCleanup; // Clean up the array after processing
+  }
+  next();
+};
+
+module.exports = { scheduleCleanup, performCleanup, trackFileForCleanup, cleanupTrackedFiles };
