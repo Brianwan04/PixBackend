@@ -6,8 +6,10 @@ module.exports = {
       name: "Background Remover"
     },
     aiEnhancer: {
-      id: "tencentarc/vqfr:f9085ea5bf9c8f2d7e5c64564234ab41b5bcd8cd61a58b59a3dde5cbb487721a",
-      name: "VQFR Enhancer"
+      //id: "tencentarc/vqfr:f9085ea5bf9c8f2d7e5c64564234ab41b5bcd8cd61a58b59a3dde5cbb487721a",
+     // name: "VQFR Enhancer"
+      id: "codeslake/ifan-defocus-deblur:ea3b2e163e2ad629fb23e81a1cc9e485c32aa4a53eba4fe08b7dbdd39e6e381e",
+      name: "AI Enhancer"
     },
     avatarCreator: {
       id: "bytedance/pulid:43d309c37ab4e62361e5e29b8e9e867fb2dcbcec77ae91206a8d95ac5dd451a0",
@@ -18,17 +20,17 @@ module.exports = {
       name: "SDXL Lightning"
     },
     imageUpscale: {
-      id: "tencentarc/gfpgan:9283608cc6b7be6b65a8e44983db012355fde4132009bf99d9761b0068f7479b",
+      id: "tencentarc/gfpgan:0fbacf7afc6c144e5be9767cff80f25aff23e52b0708f17e20f9879b2f21516c",
       name: "GFP-GAN Upscale"
       //id: "sczhou/codeformer:7de2ea26c616d5bf2245ad0d5e24f0ff9a6204578a5c876db53142edd9d2cd56",
      // name: "CodeFormer Upscale"
     },
     aiArt: {
-      id: "fofr/become-image:8c00cf0b5c99a4eabeddedb2921536b66db4e282acf7c83eaee42a3d5d5f3c29",
+      id: "fofr/become-image:8d0b076a2aff3904dfcec3253c778e0310a68f78483c4699c7fd800f3051d2b3",
       name: "Become Image"
     },
     bgGenerator: {
-      id: "briaai/rmbg-1.4:4e3da974d0f0909e31d45edb0b76925dd5f927b914a1e53d3d1e6fa43f1c397c",
+      id: "bria/generate-background",
       name: "Bria Background Generator"
     },
     // placeholders for models you didn't pin — add versions later
