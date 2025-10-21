@@ -389,6 +389,10 @@ getImageUrlFromPredictionOutput = (output) => {
 
   // 4. AI Avatar Creator
   createAvatar = async (req, res) => {
+    console.log("req.file:", req.file);        // when using single()
+console.log("req.files:", req.files);      // when using fields() or any()
+console.log("req.body keys:", Object.keys(req.body));
+
   // helper to pick file node from req.file or req.files
   const pickFileFromRequest = (r) => {
     if (r.file) return r.file;

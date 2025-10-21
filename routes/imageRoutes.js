@@ -63,16 +63,27 @@ router.post(
 );
 
 // Keep avatar route accepting 'main_face_image' as the file field
+// Accept either "main_face_image" or "image" (explicit fields)
 router.post(
   "/create-avatar",
-  upload.single("main_face_image"),
+  upload.fields([
+    { name: "main_face_image", maxCount: 1 },
+    { name: "image", maxCount: 1 }
+  ]),
   (req, res, next) => {
-    if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
-    else next();
+    // find which file arrived and track it
+    const f =
+      (req.files && req.files.main_face_image && req.files.main_face_image[0]) ||
+      (req.files && req.files.image && req.files.image[0]);
+
+    if (f) {
+      trackFileForCleanup(f.path)(req, res, next);
+    } else next();
   },
   imageController.createAvatar,
   cleanupTrackedFiles
 );
+
 
 router.post("/text-to-image", imageController.textToImage, cleanupTrackedFiles);
 
