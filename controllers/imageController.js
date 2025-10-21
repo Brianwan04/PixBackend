@@ -48,27 +48,58 @@ class ImageController {
     this.versionCache = {}; // cache model slug -> version id
   }
 
-  uploadToReplicate = async (filePath) => {
-  const form = new FormData();
-  form.append("file", fsExtra.createReadStream(filePath));
+// place this inside class ImageController { ... } (e.g. right after the constructor)
+uploadToReplicate = async (filePath) => {
+  try {
+    const form = new FormData();
+    form.append("file", fsExtra.createReadStream(filePath));
 
-  const res = await fetchFn("https://api.replicate.com/v1/files", {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${this.token}`,
-    ...form.getHeaders(), // <-- crucial for multipart/form-data
-  },
-  body: form,
-});
+    const headers = {
+      Authorization: `Bearer ${this.token}`,
+      ...form.getHeaders(), // boundary + content-type
+    };
 
+    const res = await axios.post("https://api.replicate.com/v1/files", form, {
+      headers,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      timeout: 60000,
+      validateStatus: null,
+    });
 
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json.url) {
-    throw new Error("Failed to upload file to Replicate: " + JSON.stringify(json));
+    if (res.status >= 400) {
+      console.error("[uploadToReplicate] failed status:", res.status);
+      console.error("[uploadToReplicate] headers:", res.headers);
+      console.error("[uploadToReplicate] body:", res.data);
+      throw new Error("Failed to upload file to Replicate: " + JSON.stringify(res.data));
+    }
+
+    const data = res.data || {};
+    const publicUrl =
+      data.url ||
+      data.download_url ||
+      data.downloadUrl ||
+      data.file?.url ||
+      data.file?.download_url ||
+      data.file?.downloadUrl;
+
+    if (!publicUrl) {
+      console.error("[uploadToReplicate] unexpected upload response:", JSON.stringify(data));
+      throw new Error("Upload succeeded but no public URL returned: " + JSON.stringify(data));
+    }
+
+    return publicUrl;
+  } catch (err) {
+    console.error(
+      "[uploadToReplicate] exception:",
+      err && err.response ? err.response.data || err.response : err.message || err
+    );
+    throw err;
   }
-
-  return json.url; // publicly accessible URL
 };
+
+
+
 
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
