@@ -22,82 +22,48 @@ class ImageController {
         "Warning: REPLICATE_API_TOKEN is not set. Replicate requests will fail until you set it."
       );
     }
-    this.versionCache = {}; // cache model slug -> version id
+    this.versionCache = {};
   }
 
-  // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
     if (!modelId) return null;
     const parts = modelId.split(":");
-    if (parts.length === 2) return parts[1];
-    return null;
+    return parts.length === 2 ? parts[1] : null;
   };
 
-  // Resolve a version id for a model id (either pinned or fetch first available version)
   resolveVersionId = async (modelId) => {
     if (this.versionCache[modelId]) return this.versionCache[modelId];
-
-    // pinned version in model id (owner/model:version)
     const pinned = this.extractPinnedVersion(modelId);
     if (pinned) {
       this.versionCache[modelId] = pinned;
       return pinned;
     }
 
-    // not pinned: modelId is like "bytedance/sdxl-lightning-4step"
     const encoded = encodeURIComponent(modelId);
     const url = `https://api.replicate.com/v1/models/${encoded}/versions`;
-
     const res = await fetchFn(url, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
     });
-
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = json?.error?.message || json?.detail || JSON.stringify(json);
       throw new Error(`Failed to list versions for ${modelId}: ${msg}`);
     }
 
-    // response shape: { versions: [ { id: "<version-id>", ... }, ... ] } or array depending on API
-    let versionId = null;
-    if (Array.isArray(json)) {
-      versionId = json[0]?.id || json[0];
-    } else if (Array.isArray(json?.versions) && json.versions.length > 0) {
-      versionId = json.versions[0].id;
-    } else if (json?.[0]?.id) {
-      versionId = json[0].id;
-    }
-
-    if (!versionId) {
-      throw new Error(
-        `No available versions returned for model ${modelId}. Consider pinning a version id.`
-      );
-    }
-
+    let versionId = Array.isArray(json?.versions) && json.versions.length > 0 ? json.versions[0].id : json[0]?.id || json[0];
+    if (!versionId) throw new Error(`No versions returned for model ${modelId}`);
     this.versionCache[modelId] = versionId;
     return versionId;
   };
 
-  // Create a prediction via POST /v1/predictions and wait (Prefer: wait=60)
   createReplicatePrediction = async (versionId, input = {}, waitSeconds = 60) => {
     const url = "https://api.replicate.com/v1/predictions";
     const res = await fetchFn(url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        Prefer: `wait=${waitSeconds}`,
-      },
-      body: JSON.stringify({
-        version: versionId,
-        input,
-      }),
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", Prefer: `wait=${waitSeconds}` },
+      body: JSON.stringify({ version: versionId, input }),
     });
-
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = json?.error?.message || json?.detail || JSON.stringify(json);
@@ -105,390 +71,108 @@ class ImageController {
       err.response = json;
       throw err;
     }
-
     return json;
   };
 
-  // Helper to get output URL (keeps your original logic)
   getOutputUrl = (output) => {
-    if (Array.isArray(output) && output.length > 0) {
-      return output[0].url || output[0];
-    } else if (typeof output === "string") {
-      return output;
-    } else if (output?.url) {
-      return output.url;
-    }
+    if (Array.isArray(output) && output.length > 0) return output[0].url || output[0];
+    if (typeof output === "string") return output;
+    if (output?.url) return output.url;
     throw new Error("Invalid output format from Replicate");
   };
 
-  // Convert image to base64
   imageToBase64 = async (filePath) => {
     try {
-      const dir = path.dirname(filePath);
-      await fs.mkdir(dir, { recursive: true });
-      if (
-        !(await fs
-          .access(filePath)
-          .then(() => true)
-          .catch(() => false))
-      ) {
-        throw new Error("File not found");
-      }
+      await fs.access(filePath);
       const buffer = await fs.readFile(filePath);
       return buffer.toString("base64");
-    } catch (error) {
-      throw new Error(`Failed to read image: ${error.message}`);
+    } catch (err) {
+      throw new Error(`Failed to read image: ${err.message}`);
     }
   };
 
-  // Save processed image
   saveProcessedImage = async (imageUrl, prefix = "processed") => {
     try {
-      const response = await axios.get(imageUrl, {
-        responseType: "arraybuffer",
-        timeout: 30000,
-      });
+      const response = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 30000 });
       const filename = `${prefix}-${Date.now()}.png`;
       const dir = path.join(__dirname, "../public/processed");
       await fs.mkdir(dir, { recursive: true });
       const filePath = path.join(dir, filename);
       await fs.writeFile(filePath, response.data);
       return { filename, path: filePath, url: `/processed/${filename}` };
-    } catch (error) {
-      throw new Error(`Failed to save image: ${error.message}`);
+    } catch (err) {
+      throw new Error(`Failed to save image: ${err.message}`);
     }
   };
 
-  // Wrapper to run a model by its model entry from utils/replicateModels
   runModel = async (modelEntry, input = {}) => {
-    // modelEntry.id might be "owner/model" or "owner/model:version"
     const modelId = modelEntry?.id;
-    if (!modelId) throw new Error("Model id is missing");
-
-    // If the id contains a colon, we treat the right side as a version id.
+    if (!modelId) throw new Error("Model id missing");
     const pinned = this.extractPinnedVersion(modelId);
-    let versionId = pinned;
-    if (!versionId) {
-      // model slug (owner/model) -> get first available version
-      versionId = await this.resolveVersionId(modelId);
-    }
-
-    // create prediction and return the prediction object
-    const prediction = await this.createReplicatePrediction(versionId, input);
-    return prediction;
+    const versionId = pinned || await this.resolveVersionId(modelId);
+    return this.createReplicatePrediction(versionId, input);
   };
 
-  // 1. AI Background Remover
-  removeBackground = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      console.log(`[BG Remove] Processing: ${req.file.filename}`);
-
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        format: "png",
-      };
-
-      const prediction = await this.runModel(models.backgroundRemover, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "no-bg"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Background removed",
-        downloadUrl: saved.url,
-        operation: "background_remover",
-      });
-    } catch (error) {
-      console.error("[BG Remove] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Background removal failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 2. AI Enhancer
-  enhanceImage = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        scale: 2,
-      };
-
-      const prediction = await this.runModel(models.aiEnhancer, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "enhanced"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Image enhanced",
-        downloadUrl: saved.url,
-        operation: "enhancer",
-      });
-    } catch (error) {
-      console.error("[Enhance] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Enhancement failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 3. Magic Eraser
-  magicEraser = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "remove object",
-      };
-
-      const prediction = await this.runModel(models.magicEraser, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "erased"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Object removed",
-        downloadUrl: saved.url,
-        operation: "magic_eraser",
-      });
-    } catch (error) {
-      console.error("[Magic Eraser] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Object removal failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 4. AI Avatar Creator
-  createAvatar = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "high quality avatar",
-      };
-
-      const prediction = await this.runModel(models.avatarCreator, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "avatar"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Avatar created",
-        downloadUrl: saved.url,
-        operation: "avatar_creator",
-      });
-    } catch (error) {
-      console.error("[Avatar] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Avatar creation failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 5. Text to Image
-  textToImage = async (req, res) => {
-    try {
-      const {
-        prompt,
-        width = 1024,
-        height = 1024,
-        negative_prompt = "low quality",
-      } = req.body;
-      if (!prompt) return res.status(400).json({ error: "Prompt required" });
-
-      // Many users want to specifically control SDXL version — if you set env REPLICATE_SDXL_VERSION
-      // and the textToImage model (in utils/replicateModels) is a slug (no pinned version),
-      // resolveVersionId will use the first available version. You can also pin the version in utils/replicateModels.
-      const input = { prompt, width, height, negative_prompt, num_outputs: 1 };
-      const prediction = await this.runModel(models.textToImage, input);
-
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "text-to-image"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Image generated",
-        downloadUrl: saved.url,
-        operation: "text_to_image",
-        prompt,
-      });
-    } catch (error) {
-      console.error("[Text to Image] Error:", error.response ?? error.message);
-      res
-        .status(500)
-        .json({ error: "Image generation failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 6. Image Upscale
-  upscaleImage = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        scale: 2,
-      };
-
-      const prediction = await this.runModel(models.imageUpscale, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "upscaled"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Image upscaled",
-        downloadUrl: saved.url,
-        operation: "upscale",
-      });
-    } catch (error) {
-      console.error("[Upscale] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res.status(500).json({ error: "Upscale failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 7. Style Transfer
-  styleTransfer = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "artistic style",
-      };
-
-      const prediction = await this.runModel(models.styleTransfer, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "styled"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Style applied",
-        downloadUrl: saved.url,
-        operation: "style_transfer",
-      });
-    } catch (error) {
-      console.error("[Style Transfer] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Style transfer failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // 8. Mockup Generator
-  createMockup = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        bg_prompt: "professional",
-      };
-
-      const prediction = await this.runModel(models.mockupGenerator, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "mockup"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Mockup created",
-        downloadUrl: saved.url,
-        operation: "mockup",
-      });
-    } catch (error) {
-      console.error("[Mockup] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Mockup creation failed", message: (error.response?.detail || error.message) });
-    }
-  };
-
-  // Get available styles
-  getStyles = async (req, res) => {
-    try {
-      res.json({
-        success: true,
-        styles: sampleStyles || {
-          default: { name: "Default", prompt: "artistic" },
-        },
-      });
-    } catch (error) {
-      console.error("[Styles] Error:", error);
-      res
-        .status(500)
-        .json({ error: "Failed to fetch styles", message: error.message });
-    }
-  };
-
-  // Cleanup on error
   cleanupOnError = async (file) => {
     if (file?.path) {
-      try {
-        await fs.unlink(file.path);
-        console.log(`[Cleanup] Removed ${file.path}`);
-      } catch (error) {
-        console.error(
-          `[Cleanup] Failed to remove ${file.path}: ${error.message}`
-        );
-      }
+      try { await fs.unlink(file.path); } catch (err) { console.error(`[Cleanup] Failed: ${err.message}`); }
     }
   };
 
-  // Health check - pings the models API
+  // ====== Model Functions ======
+  removeBackground = this._processImage.bind(this, models.backgroundRemover, "no-bg", "background_remover", { format: "png" });
+  enhanceImage = this._processImage.bind(this, models.aiEnhancer, "enhanced", "enhancer", { scale: 2 });
+  magicEraser = this._processImage.bind(this, models.magicEraser, "erased", "magic_eraser", { prompt: "remove object" });
+  upscaleImage = this._processImage.bind(this, models.imageUpscale, "upscaled", "upscale", { scale: 2, key: "img" });
+  styleTransfer = this._processImage.bind(this, models.styleTransfer, "styled", "style_transfer", { prompt: "artistic style" });
+  createMockup = this._processImage.bind(this, models.mockupGenerator, "mockup", "mockup", { bg_prompt: "professional" });
+
+  textToImage = async (req, res) => {
+    try {
+      const { prompt, width = 1024, height = 1024, negative_prompt = "low quality" } = req.body;
+      if (!prompt) return res.status(400).json({ error: "Prompt required" });
+      const input = { prompt, width, height, negative_prompt, num_outputs: 1 };
+      const prediction = await this.runModel(models.textToImage, input);
+      const saved = await this.saveProcessedImage(this.getOutputUrl(prediction.output), "text-to-image");
+      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+      res.json({ success: true, message: "Image generated", downloadUrl: saved.url, operation: "text_to_image", prompt });
+    } catch (err) {
+      console.error("[Text to Image] Error:", err.response ?? err.message);
+      res.status(500).json({ error: "Image generation failed", message: err.response?.detail || err.message });
+    }
+  };
+
+  getStyles = async (req, res) => {
+    try { res.json({ success: true, styles: sampleStyles || { default: { name: "Default", prompt: "artistic" } } }); }
+    catch (err) { res.status(500).json({ error: "Failed to fetch styles", message: err.message }); }
+  };
+
   healthCheck = async (req, res) => {
     try {
       const url = "https://api.replicate.com/v1/models/stability-ai/stable-diffusion";
-      const response = await fetchFn(url, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(JSON.stringify(body));
-      }
-      res.json({
-        status: "healthy",
-        service: "Replicate API",
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      res.status(503).json({
-        status: "unhealthy",
-        service: "Replicate API",
-        error: error.message,
-      });
+      const response = await fetchFn(url, { method: "GET", headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" } });
+      if (!response.ok) throw new Error(JSON.stringify(await response.json().catch(() => ({}))));
+      res.json({ status: "healthy", service: "Replicate API", timestamp: new Date().toISOString() });
+    } catch (err) {
+      res.status(503).json({ status: "unhealthy", service: "Replicate API", error: err.message });
+    }
+  };
+
+  // ===== Helper to process any image-based model =====
+  _processImage = async (modelEntry, prefix, operation, extraInput = {}, req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No image provided" });
+      const base64 = await this.imageToBase64(req.file.path);
+      const key = extraInput.key || "image";
+      const input = { ...extraInput, [key]: `data:${req.file.mimetype};base64,${base64}` };
+      const prediction = await this.runModel(modelEntry, input);
+      const saved = await this.saveProcessedImage(this.getOutputUrl(prediction.output), prefix);
+      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+      res.json({ success: true, message: `${operation} completed`, downloadUrl: saved.url, operation });
+    } catch (err) {
+      console.error(`[${operation}] Error:`, err.response ?? err.message);
+      await this.cleanupOnError(req.file);
+      res.status(500).json({ error: `${operation} failed`, message: err.response?.detail || err.message });
     }
   };
 }
