@@ -19,7 +19,9 @@ const NODE_ENV = process.env.NODE_ENV || "development";
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
 
 // Trust proxy for headers
+console.log("[Server] TRUST_PROXY =", TRUST_PROXY); // should log true
 if (TRUST_PROXY) app.set("trust proxy", 1);
+
 
 // Initialize directories
 const initializeDirectories = async () => {
