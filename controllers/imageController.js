@@ -49,54 +49,103 @@ class ImageController {
   }
 
 // place this inside class ImageController { ... } (e.g. right after the constructor)
+// inside class ImageController { ... }
 uploadToReplicate = async (filePath) => {
+  const axiosLib = require("axios"); // ensure axios reference
   try {
     const form = new FormData();
-    form.append("file", fsExtra.createReadStream(filePath));
+    form.append("file", fsExtra.createReadStream(filePath)); // field name 'file' expected by Replicate
 
     const headers = {
       Authorization: `Bearer ${this.token}`,
-      ...form.getHeaders(), // boundary + content-type
+      ...form.getHeaders(), // content-type with boundary
     };
 
-    const res = await axios.post("https://api.replicate.com/v1/files", form, {
-      headers,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      timeout: 60000,
-      validateStatus: null,
+    // compute content-length (important)
+    const length = await new Promise((resolve, reject) => {
+      form.getLength((err, len) => {
+        if (err) return reject(err);
+        resolve(len);
+      });
+    }).catch((err) => {
+      // if getLength fails we still attempt, but better to fail loudly
+      console.warn("[uploadToReplicate] form.getLength failed:", err && err.message);
+      return null;
     });
 
-    if (res.status >= 400) {
-      console.error("[uploadToReplicate] failed status:", res.status);
-      console.error("[uploadToReplicate] headers:", res.headers);
-      console.error("[uploadToReplicate] body:", res.data);
-      throw new Error("Failed to upload file to Replicate: " + JSON.stringify(res.data));
+    if (length) headers["Content-Length"] = length;
+
+    // Try the "files" endpoint first (most recent examples), fallback to /v1/upload if 404
+    const endpoints = [
+      "https://api.replicate.com/v1/files",
+      "https://api.replicate.com/v1/upload",
+    ];
+
+    let res = null;
+    let data = null;
+    for (const url of endpoints) {
+      try {
+        res = await axiosLib.post(url, form, {
+          headers,
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+          timeout: 120000,
+          validateStatus: null, // we'll inspect status
+        });
+      } catch (err) {
+        // network or Axios-level error
+        console.error(`[uploadToReplicate] request to ${url} failed:`, err && err.message);
+        continue;
+      }
+
+      // If this endpoint returned 404, try next
+      if (res.status === 404) {
+        console.warn(`[uploadToReplicate] ${url} returned 404, trying next endpoint`);
+        continue;
+      }
+
+      // parse data for success or error
+      data = res.data || {};
+      if (res.status >= 400) {
+        console.error(`[uploadToReplicate] failed status: ${res.status}`);
+        console.error("[uploadToReplicate] headers:", res.headers);
+        console.error("[uploadToReplicate] body:", JSON.stringify(data));
+        // if returned a useful JSON error like {"detail":"Missing content"}, surface it
+        throw new Error("Failed to upload file to Replicate: " + JSON.stringify(data));
+      }
+
+      // success
+      break;
     }
 
-    const data = res.data || {};
+    if (!res || res.status >= 400) {
+      throw new Error("Upload failed; no viable replicate file endpoint succeeded");
+    }
+
+    // Typical shapes: { id, url } or { file: { id, download_url } } or { download_url }
+    const body = data || {};
     const publicUrl =
-      data.url ||
-      data.download_url ||
-      data.downloadUrl ||
-      data.file?.url ||
-      data.file?.download_url ||
-      data.file?.downloadUrl;
+      body.url ||
+      body.download_url ||
+      body.downloadUrl ||
+      body.file?.url ||
+      body.file?.download_url ||
+      body.file?.downloadUrl ||
+      body.result?.url; // extra fallback
 
     if (!publicUrl) {
-      console.error("[uploadToReplicate] unexpected upload response:", JSON.stringify(data));
-      throw new Error("Upload succeeded but no public URL returned: " + JSON.stringify(data));
+      console.error("[uploadToReplicate] unexpected upload response:", JSON.stringify(body));
+      throw new Error("Upload succeeded but no public URL returned: " + JSON.stringify(body));
     }
 
     return publicUrl;
   } catch (err) {
-    console.error(
-      "[uploadToReplicate] exception:",
-      err && err.response ? err.response.data || err.response : err.message || err
-    );
+    // include axios response body when present
+    console.error("[uploadToReplicate] exception:", err && (err.response?.data || err.message || err));
     throw err;
   }
 };
+
 
 
 
