@@ -53,10 +53,14 @@ class ImageController {
   form.append("file", fsExtra.createReadStream(filePath));
 
   const res = await fetchFn("https://api.replicate.com/v1/files", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${this.token}` }, // <-- Bearer, not Token
-    body: form,
-  });
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${this.token}`,
+    ...form.getHeaders(), // <-- crucial for multipart/form-data
+  },
+  body: form,
+});
+
 
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.url) {
