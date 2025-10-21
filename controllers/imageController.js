@@ -108,7 +108,7 @@ class ImageController {
     return json;
   };
 
-  // Helper to get output URL (keeps your original logic)
+  // Helper to get output URL (updated to handle array or string)
   getOutputUrl = (output) => {
     if (Array.isArray(output) && output.length > 0) {
       return output[0].url || output[0];
@@ -210,17 +210,14 @@ class ImageController {
     }
   };
 
-  // 2. AI Enhancer (Fixed: Use req.body for scale/face_enhance, model switched to real-esrgan)
+  // 2. AI Enhancer
   enhanceImage = async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const scale = parseInt(req.body.scale) || 2; // Use passed scale or default
-      const face_enhance = req.body.face_enhance === 'true'; // Use passed face_enhance
       const input = {
         image: `data:${req.file.mimetype};base64,${base64}`,
-        scale,
-        face_enhance,
+        iterations: req.body.iterations || 1, // Align with model; no scale/face_enhance supported
       };
 
       const prediction = await this.runModel(models.aiEnhancer, input);
@@ -251,7 +248,9 @@ class ImageController {
       const base64 = await this.imageToBase64(req.file.path);
       const input = {
         image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "remove object",
+        prompt: req.body.prompt || "background",
+        // Model requires mask; assume backend generates or use placeholder
+        mask: req.body.mask_data || "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==", // dummy mask
       };
 
       const prediction = await this.runModel(models.magicEraser, input);
@@ -275,19 +274,26 @@ class ImageController {
     }
   };
 
-  // 4. AI Avatar Creator (Fixed: Use main_face_image, craft prompt from style)
+  // 4. AI Avatar Creator
   createAvatar = async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
       const style = req.body.style || 'fantasy'; // Use passed style or default
       const input = {
-        main_face_image: `data:${req.file.mimetype};base64,${base64}`, // Fixed key
-        prompt: `A high-quality avatar in ${style} style, detailed, vibrant`, // Crafted from style
-        negative_prompt: "blurry, low quality, deformed", // Added for better results
-        id_weight: 1.0, // Default params for PuLID
-        num_steps: 20,
-        guidance_scale: 3.5,
+        main_face_image: `data:${req.file.mimetype};base64,${base64}`,
+        prompt: `portrait, ${style} style, detailed, vibrant color, light and shadow play`,
+        cfg_scale: 1.2,
+        num_steps: 4,
+        image_width: 768,
+        num_samples: 4,
+        image_height: 1024,
+        output_format: "webp",
+        identity_scale: 0.8,
+        mix_identities: false,
+        output_quality: 80,
+        generation_mode: "fidelity",
+        negative_prompt: "flaws in the eyes, flaws in the face, flaws, lowres, non-HDRi, low quality, worst quality,artifacts noise, text, watermark, glitch, deformed, mutated, ugly, disfigured, hands, low resolution, partially rendered objects,  deformed or partially rendered eyes, deformed, deformed eyeballs, cross-eyed,blurry"
       };
 
       const prediction = await this.runModel(models.avatarCreator, input);
@@ -318,14 +324,21 @@ class ImageController {
         prompt,
         width = 1024,
         height = 1024,
-        negative_prompt = "low quality",
+        negative_prompt = "worst quality, low quality",
       } = req.body;
       if (!prompt) return res.status(400).json({ error: "Prompt required" });
 
-      // Many users want to specifically control SDXL version — if you set env REPLICATE_SDXL_VERSION
-      // and the textToImage model (in utils/replicateModels) is a slug (no pinned version),
-      // resolveVersionId will use the first available version. You can also pin the version in utils/replicateModels.
-      const input = { prompt, width, height, negative_prompt, num_outputs: 1 };
+      const input = { 
+        seed: 0,
+        width,
+        height,
+        prompt,
+        scheduler: "K_EULER",
+        num_outputs: 1,
+        guidance_scale: 0,
+        negative_prompt,
+        num_inference_steps: 4
+      };
       const prediction = await this.runModel(models.textToImage, input);
 
       const saved = await this.saveProcessedImage(
@@ -348,16 +361,15 @@ class ImageController {
     }
   };
 
-  // 6. Image Upscale (Fixed: Use req.body.scale, model switched to real-esrgan)
+  // 6. Image Upscale
   upscaleImage = async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
-      const scale = parseInt(req.body.scale) || 4; // Use passed scale or default to 4 (app sends 4)
       const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        scale,
-        face_enhance: true, // Enable by default for better results
+        img: `data:${req.file.mimetype};base64,${base64}`,
+        scale: parseInt(req.body.scale) || 2,
+        version: "v1.4"
       };
 
       const prediction = await this.runModel(models.imageUpscale, input);
@@ -379,17 +391,27 @@ class ImageController {
     }
   };
 
-  // 7. Style Transfer
+  // 7. Style Transfer (using aiArt model - fofr/become-image)
   styleTransfer = async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
       const input = {
         image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "artistic style",
+        prompt: req.body.custom_prompt || "a person",
+        // If style_key provided, perhaps map to image_to_become, but since no, assume prompt-based
+        image_to_become: req.body.image_to_become || "https://replicate.delivery/pbxt/KYEdDanJM7WAO228dBjJllUErGYq0ysQXgencMcVMDtNW9sf/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA1L2pvYjU4NS12MjE2LXRhbmctYXVtLTAxMC1leWUtYXJ0cHJpbnRzLmpwZw.webp", // default or from style
+        negative_prompt: "",
+        prompt_strength: 2,
+        number_of_images: 1,
+        denoising_strength: 1,
+        instant_id_strength: 1,
+        image_to_become_noise: 0.3,
+        control_depth_strength: 0.8,
+        image_to_become_strength: 0.75
       };
 
-      const prediction = await this.runModel(models.styleTransfer, input);
+      const prediction = await this.runModel(models.aiArt, input);
       const saved = await this.saveProcessedImage(
         this.getOutputUrl(prediction.output),
         "styled"
@@ -410,17 +432,24 @@ class ImageController {
     }
   };
 
-  // 8. Mockup Generator
+  // 8. Mockup Generator (using bgGenerator - bria/generate-background)
   createMockup = async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "No image provided" });
       const base64 = await this.imageToBase64(req.file.path);
       const input = {
+        fast: true,
+        sync: true,
         image: `data:${req.file.mimetype};base64,${base64}`,
-        bg_prompt: "professional",
+        bg_prompt: req.body.bg_prompt || "professional background",
+        force_rmbg: false,
+        refine_prompt: true,
+        original_quality: false,
+        enhance_ref_image: true,
+        content_moderation: false
       };
 
-      const prediction = await this.runModel(models.mockupGenerator, input);
+      const prediction = await this.runModel(models.bgGenerator, input);
       const saved = await this.saveProcessedImage(
         this.getOutputUrl(prediction.output),
         "mockup"
