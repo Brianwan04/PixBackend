@@ -6,6 +6,29 @@ const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
 require("dotenv").config();
 
+// controllers/imageController.js
+const FormData = require("form-data");
+const fsExtra = require("fs"); // node fs for createReadStream
+
+uploadToReplicate = async (filePath) => {
+  const form = new FormData();
+  form.append("file", fsExtra.createReadStream(filePath));
+
+  const res = await fetchFn("https://api.replicate.com/v1/upload", {
+    method: "POST",
+    headers: { Authorization: `Token ${this.token}` },
+    body: form,
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.url) {
+    throw new Error("Failed to upload file to Replicate: " + JSON.stringify(json));
+  }
+
+  return json.url; // publicly accessible URL
+};
+
+
 let fetchFn;
 if (typeof globalThis.fetch === "function") {
   fetchFn = globalThis.fetch.bind(globalThis);
@@ -351,12 +374,12 @@ getImageUrlFromPredictionOutput = (output) => {
 
     // If uploaded file exists, convert to base64 data URL. Otherwise pass the remote url through.
     let mainFaceInput;
-    if (uploadedFile) {
-      const base64 = await this.imageToBase64(uploadedFile.path);
-      mainFaceInput = `data:${uploadedFile.mimetype};base64,${base64}`;
-    } else {
-      mainFaceInput = remoteFaceUrl;
-    }
+if (uploadedFile) {
+  mainFaceInput = await this.uploadToReplicate(uploadedFile.path); // <--- uploaded to get URL
+} else {
+  mainFaceInput = remoteFaceUrl;
+}
+
 
     // Build input object modeled after the Replicate example you shared
     const input = {
