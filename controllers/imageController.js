@@ -84,30 +84,67 @@ class ImageController {
 
   // Create a prediction via POST /v1/predictions and wait (Prefer: wait=60)
   createReplicatePrediction = async (versionId, input = {}, waitSeconds = 60) => {
-    const url = "https://api.replicate.com/v1/predictions";
-    const res = await fetchFn(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        Prefer: `wait=${waitSeconds}`,
-      },
-      body: JSON.stringify({
-        version: versionId,
-        input,
-      }),
-    });
-
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const msg = json?.error?.message || json?.detail || JSON.stringify(json);
-      const err = new Error(`Replicate API error ${res.status}: ${msg}`);
-      err.response = json;
-      throw err;
-    }
-
-    return json;
+  const url = "https://api.replicate.com/v1/predictions";
+  const body = {
+    version: versionId,
+    input,
   };
+
+  const res = await fetchFn(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${this.token}`,
+      "Content-Type": "application/json",
+      Prefer: `wait=${waitSeconds}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = json?.error?.message || json?.detail || JSON.stringify(json);
+    const err = new Error(`Replicate API error ${res.status}: ${msg}`);
+    err.response = json;
+    throw err;
+  }
+  return json;
+};
+
+// 2) Add this helper to parse mixed Replicate outputs and prefer images
+getImageUrlFromPredictionOutput = (output) => {
+  const imageRegex = /\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i;
+
+  const tryExtract = (item) => {
+    if (!item) return null;
+    if (typeof item === "object") {
+      const candidate = item.url || item.artifact?.url || item.download_url || item.uri;
+      if (candidate && (candidate.startsWith("data:image/") || imageRegex.test(candidate) || candidate.includes("replicate.delivery"))) return candidate;
+      return null;
+    }
+    if (typeof item === "string") {
+      if (item.startsWith("data:image/") || imageRegex.test(item)) return item;
+      if (item.startsWith("https://replicate.delivery") || item.startsWith("https://") || item.startsWith("http://")) return item;
+    }
+    return null;
+  };
+
+  if (Array.isArray(output) && output.length > 0) {
+    for (const item of output) {
+      const v = tryExtract(item);
+      if (v) return v;
+    }
+    // fallback: if first item is string return it
+    const first = output[0];
+    if (typeof first === "string") return first;
+    if (first?.url) return first.url;
+  }
+
+  // single string or object
+  const single = tryExtract(output);
+  if (single) return single;
+
+  throw new Error("No image URL found in prediction output");
+};
 
   // Helper to get output URL (keeps your original logic)
   getOutputUrl = (output) => {
@@ -275,34 +312,91 @@ class ImageController {
 
   // 4. AI Avatar Creator
   createAvatar = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "high quality avatar",
-      };
-
-      const prediction = await this.runModel(models.avatarCreator, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "avatar"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Avatar created",
-        downloadUrl: saved.url,
-        operation: "avatar_creator",
-      });
-    } catch (error) {
-      console.error("[Avatar] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Avatar creation failed", message: (error.response?.detail || error.message) });
+  // helper to pick file node from req.file or req.files
+  const pickFileFromRequest = (r) => {
+    if (r.file) return r.file;
+    if (r.files) {
+      const keys = ["main_face_image", "image", "file"];
+      for (const k of keys) {
+        if (Array.isArray(r.files[k]) && r.files[k][0]) return r.files[k][0];
+      }
+      const firstKey = Object.keys(r.files)[0];
+      if (firstKey && Array.isArray(r.files[firstKey])) return r.files[firstKey][0];
     }
+    return null;
   };
+
+  try {
+    // Accept either an uploaded file OR a remote 'main_face_image' URL in req.body
+    const uploadedFile = pickFileFromRequest(req);
+    const remoteFaceUrl = req.body?.main_face_image; // e.g., replicate.delivery url or other image url
+
+    if (!uploadedFile && !remoteFaceUrl) {
+      return res.status(400).json({ error: "No image provided (upload or main_face_image url required)" });
+    }
+
+    // Read style/options from request body, with sensible defaults
+    const style = req.body?.style || req.body?.style_id || "fantasy";
+    const cfg_scale = Number(req.body?.cfg_scale ?? 1.2);
+    const num_steps = Number(req.body?.num_steps ?? 20);
+    const image_width = Number(req.body?.image_width ?? 768);
+    const image_height = Number(req.body?.image_height ?? 1024);
+    const num_samples = Number(req.body?.num_samples ?? 1);
+    const output_format = req.body?.output_format || "png";
+    const identity_scale = Number(req.body?.identity_scale ?? 0.8);
+    const mix_identities = req.body?.mix_identities === "true" || req.body?.mix_identities === true ? true : false;
+    const negative_prompt = req.body?.negative_prompt || "low quality, bad anatomy, watermark";
+    const generation_mode = req.body?.generation_mode || "fidelity";
+    const output_quality = Number(req.body?.output_quality ?? 90);
+
+    // If uploaded file exists, convert to base64 data URL. Otherwise pass the remote url through.
+    let mainFaceInput;
+    if (uploadedFile) {
+      const base64 = await this.imageToBase64(uploadedFile.path);
+      mainFaceInput = `data:${uploadedFile.mimetype};base64,${base64}`;
+    } else {
+      mainFaceInput = remoteFaceUrl;
+    }
+
+    // Build input object modeled after the Replicate example you shared
+    const input = {
+      prompt: `Portrait of the provided face — ${style} style. High detail, clean background, sharp facial detail, professional lighting.`,
+      cfg_scale,
+      num_steps,
+      image_width,
+      image_height,
+      num_samples,
+      output_format,
+      identity_scale,
+      mix_identities,
+      output_quality,
+      generation_mode,
+      main_face_image: mainFaceInput,
+      negative_prompt,
+    };
+
+    // Run the model (models.avatarCreator should be defined in utils/replicateModels)
+    const prediction = await this.runModel(models.avatarCreator, input);
+
+    // Extract image URL robustly from the prediction.output
+    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+
+    const saved = await this.saveProcessedImage(imageUrl, "avatar");
+    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+    res.json({
+      success: true,
+      message: "Avatar created",
+      downloadUrl: saved.url,
+      operation: "avatar_creator",
+    });
+  } catch (error) {
+    console.error("[Avatar] Error:", error.response ?? error.message);
+    const file = (req.file) || (req.files && (req.files.main_face_image?.[0] || req.files.image?.[0] || req.files.file?.[0]));
+    await this.cleanupOnError(file);
+    res.status(500).json({ error: "Avatar creation failed", message: (error.response?.detail || error.message) });
+  }
+};
 
   // 5. Text to Image
   textToImage = async (req, res) => {

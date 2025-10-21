@@ -1,5 +1,6 @@
+// routes/imageRoutes.js  (Option A - quick fix: use raw upload.single)
 const express = require("express");
-const upload = require("../middleware/upload");
+const upload = require("../middleware/upload"); // keep the existing multer instance export
 const {
   trackFileForCleanup,
   cleanupTrackedFiles,
@@ -61,9 +62,10 @@ router.post(
   cleanupTrackedFiles
 );
 
+// Keep avatar route accepting 'main_face_image' as the file field
 router.post(
   "/create-avatar",
-  upload.single("image"),
+  upload.single("main_face_image"),
   (req, res, next) => {
     if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
     else next();

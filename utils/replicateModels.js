@@ -1,46 +1,5 @@
 // utils/replicateModels.js
-// utils/replicateModels.js
-module.exports = {
-  models: {
-    backgroundRemover: {
-      id: "cjwbw/rembg:fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003",
-      name: "Background Remover"
-    },
-    aiEnhancer: {
-      id: "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
-      name: "AI Enhancer"
-    },
-    avatarCreator: {
-      id: "bytedance/pulid:43d309c37ab4e62361e5e29b8e9e867fb2dcbcec77ae91206a8d95ac5dd451a0",
-      name: "Pulid Avatar"
-    },
-    textToImage: {
-      id: "bytedance/sdxl-lightning-4step:6f7a773af6fc3e8de9d5a3c00be77c17308914bf67772726aff83496ba1e3bbe",
-      name: "SDXL Lightning"
-    },
-    imageUpscale: {
-      id: "nightmareai/real-esrgan:42fed1c4974146d4d2414e2be2c5277c7fcf05fcc3a73abf41610695738c1d7b",
-      name: "Real-ESRGAN Upscale"
-    },
-    aiArt: {
-      id: "fofr/become-image:8d0b076a2aff3904dfcec3253c778e0310a68f78483c4699c7fd800f3051d2b3",
-      name: "Become Image"
-    },
-    bgGenerator: {
-      id: "stability-ai/stable-diffusion:27b93a2413e7f36cd83da926f3656280b2931564ff050bf9575f1fdf9bcd7478",
-      name: "Background Generator"
-    },
-    magicEraser: {
-      id: "stability-ai/stable-diffusion-inpainting:95a366c6de1b434f8c9b330b31b6b5b5b0c6a15aa0b12de8ffe033c4908939a5", 
-      name: "Inpainting"
-    },
-    styleTransfer: {
-      id: "lucataco/instant-id:7a4a115f78c68b0c9c2ce31513f5358b7c02b0a97c6c9e6d3a0f0c8b5b0c8c8a",
-      name: "Instant ID Style Transfer"
-    }
-  }
-};
-/*
+
 module.exports = {
   models: {
     backgroundRemover: {
@@ -76,8 +35,8 @@ module.exports = {
       name: "Bria Background Generator"
     },
     // placeholders for models you didn't pin — add versions later
-    magicEraser: { id: "stability-ai/stable-diffusion-inpainting:95a366c6de1b434f8c9b330b31b6b5b5b0c6a15aa0b12de8ffe033c4908939a5", name: "Inpainting (placeholder)" },
-    styleTransfer: { id: "stability-ai/stable-diffusion:27b93a2413e7f36cd83da926f3656280b2931564ff050bf9575f1fdf9bcd7478", name: "Style Transfer (placeholder)" },
+    magicEraser: { id: "sujaykhandekar/object-removal:6461e9e71603c4720a4ea2e0d5fb6290276e08c01a3ce96cb9aa4e0b6ecf4ad4", name: "Remove Object" },
+    styleTransfer: { id: "justmalhar/sdxl-product-mockups:0efdae8698b59b5ed4f7d043410c20242f5f17905454b3d95099f7bf3ca9aa89", name: "justmalhar/sdxl-product-mockups" },
     mockupGenerator: { id: "mia/mockup-placeholder:latest", name: "Mockup (placeholder)" }
   }
 };
