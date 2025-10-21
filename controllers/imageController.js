@@ -51,105 +51,65 @@ class ImageController {
 // place this inside class ImageController { ... } (e.g. right after the constructor)
 // inside class ImageController { ... }
 uploadToReplicate = async (filePath) => {
-  const axiosLib = require("axios"); // ensure axios reference
+  const axiosLib = require("axios");
+  const FormData = require("form-data");
+  const fsExtra = require("fs");
+  const path = require("path");
   try {
     const form = new FormData();
-    form.append("file", fsExtra.createReadStream(filePath)); // field name 'file' expected by Replicate
+    const mimeType = 'image/png'; // Adjust based on file; use mime-types lib for auto-detection if needed
+    const filename = path.basename(filePath);
+    form.append("content", fsExtra.createReadStream(filePath)); // Correct field: 'content'
+    form.append("filename", filename); // Required field
+    form.append("type", mimeType); // Optional, but good to include
 
     const headers = {
-      Authorization: `Bearer ${this.token}`,
-      ...form.getHeaders(), // content-type with boundary
+      Authorization: `Token ${this.token}`, // Correct prefix: 'Token'
+      ...form.getHeaders(),
     };
 
-    // compute content-length (important)
+    // Compute Content-Length (helps avoid chunking issues)
     const length = await new Promise((resolve, reject) => {
       form.getLength((err, len) => {
         if (err) return reject(err);
         resolve(len);
       });
     }).catch((err) => {
-      // if getLength fails we still attempt, but better to fail loudly
-      console.warn("[uploadToReplicate] form.getLength failed:", err && err.message);
+      console.warn("[uploadToReplicate] form.getLength failed:", err.message);
       return null;
     });
-
     if (length) headers["Content-Length"] = length;
 
-    // Try the "files" endpoint first (most recent examples), fallback to /v1/upload if 404
-    const endpoints = [
-      "https://api.replicate.com/v1/files",
-      "https://api.replicate.com/v1/upload",
-    ];
+    const url = "https://api.replicate.com/v1/files"; // Primary endpoint
+    const res = await axiosLib.post(url, form, {
+      headers,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      timeout: 120000,
+      validateStatus: null, // Inspect status manually
+    });
 
-    let res = null;
-    let data = null;
-    for (const url of endpoints) {
-      try {
-        res = await axiosLib.post(url, form, {
-          headers,
-          maxBodyLength: Infinity,
-          maxContentLength: Infinity,
-          timeout: 120000,
-          validateStatus: null, // we'll inspect status
-        });
-      } catch (err) {
-        // network or Axios-level error
-        console.error(`[uploadToReplicate] request to ${url} failed:`, err && err.message);
-        continue;
-      }
-
-      // If this endpoint returned 404, try next
-      if (res.status === 404) {
-        console.warn(`[uploadToReplicate] ${url} returned 404, trying next endpoint`);
-        continue;
-      }
-
-      // parse data for success or error
-      data = res.data || {};
-      if (res.status >= 400) {
-        console.error(`[uploadToReplicate] failed status: ${res.status}`);
-        console.error("[uploadToReplicate] headers:", res.headers);
-        console.error("[uploadToReplicate] body:", JSON.stringify(data));
-        // if returned a useful JSON error like {"detail":"Missing content"}, surface it
-        throw new Error("Failed to upload file to Replicate: " + JSON.stringify(data));
-      }
-
-      // success
-      break;
+    const data = res.data || {};
+    if (res.status >= 400) {
+      console.error(`[uploadToReplicate] failed status: ${res.status}`);
+      console.error("[uploadToReplicate] headers:", res.headers);
+      console.error("[uploadToReplicate] body:", JSON.stringify(data));
+      throw new Error("Failed to upload file to Replicate: " + JSON.stringify(data));
     }
 
-    if (!res || res.status >= 400) {
-      throw new Error("Upload failed; no viable replicate file endpoint succeeded");
-    }
-
-    // Typical shapes: { id, url } or { file: { id, download_url } } or { download_url }
-    const body = data || {};
-    const publicUrl =
-      body.url ||
-      body.download_url ||
-      body.downloadUrl ||
-      body.file?.url ||
-      body.file?.download_url ||
-      body.file?.downloadUrl ||
-      body.result?.url; // extra fallback
-
+    // Extract URL (response shape: { url: "https://replicate.delivery/..." })
+    const publicUrl = data.url;
     if (!publicUrl) {
-      console.error("[uploadToReplicate] unexpected upload response:", JSON.stringify(body));
-      throw new Error("Upload succeeded but no public URL returned: " + JSON.stringify(body));
+      console.error("[uploadToReplicate] unexpected response:", JSON.stringify(data));
+      throw new Error("Upload succeeded but no public URL returned: " + JSON.stringify(data));
     }
 
     return publicUrl;
   } catch (err) {
-    // include axios response body when present
-    console.error("[uploadToReplicate] exception:", err && (err.response?.data || err.message || err));
+    console.error("[uploadToReplicate] exception:", err.response?.data || err.message || err);
     throw err;
   }
 };
-
-
-
-
-
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
@@ -525,10 +485,18 @@ createAvatar = async (req, res) => {
 
     // Run the model
     console.log("[Avatar] Creating prediction with input keys:", Object.keys(input));
-    const prediction = await this.runModel(models.avatarCreator, input);
+  const prediction = await this.runModel(models.avatarCreator, input);
 
-    // Extract image URL robustly from the prediction.output
-    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+  // Add this check
+  if (prediction.status !== 'succeeded') {
+    const errMsg = prediction.error || 'Unknown error';
+    console.error("[Avatar] Prediction failed:", errMsg);
+    throw new Error(`Prediction failed: ${errMsg}`);
+  }
+
+  // Extract image URL robustly from the prediction.output
+  const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+    console.log("[Avatar] Prediction succeeded, image URL:", imageUrl);
 
     // Save processed image locally
     const saved = await this.saveProcessedImage(imageUrl, "avatar");
