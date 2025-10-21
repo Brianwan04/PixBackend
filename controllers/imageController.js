@@ -49,22 +49,23 @@ class ImageController {
   }
 
   uploadToReplicate = async (filePath) => {
-    const form = new FormData();
-    form.append("file", fsExtra.createReadStream(filePath));
+  const form = new FormData();
+  form.append("file", fsExtra.createReadStream(filePath));
 
-    const res = await fetchFn("https://api.replicate.com/v1/upload", {
-      method: "POST",
-      headers: { Authorization: `Token ${this.token}` },
-      body: form,
-    });
+  const res = await fetchFn("https://api.replicate.com/v1/files", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${this.token}` }, // <-- Bearer, not Token
+    body: form,
+  });
 
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok || !json.url) {
-      throw new Error("Failed to upload file to Replicate: " + JSON.stringify(json));
-    }
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.url) {
+    throw new Error("Failed to upload file to Replicate: " + JSON.stringify(json));
+  }
 
-    return json.url; // publicly accessible URL
-  };
+  return json.url; // publicly accessible URL
+};
+
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
