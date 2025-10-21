@@ -10,7 +10,7 @@ require("dotenv").config();
 const FormData = require("form-data");
 const fsExtra = require("fs"); // node fs for createReadStream
 
-uploadToReplicate = async (filePath) => {
+/*uploadToReplicate = async (filePath) => {
   const form = new FormData();
   form.append("file", fsExtra.createReadStream(filePath));
 
@@ -27,7 +27,7 @@ uploadToReplicate = async (filePath) => {
 
   return json.url; // publicly accessible URL
 };
-
+*/
 
 let fetchFn;
 if (typeof globalThis.fetch === "function") {
@@ -47,6 +47,24 @@ class ImageController {
     }
     this.versionCache = {}; // cache model slug -> version id
   }
+
+  uploadToReplicate = async (filePath) => {
+    const form = new FormData();
+    form.append("file", fsExtra.createReadStream(filePath));
+
+    const res = await fetchFn("https://api.replicate.com/v1/upload", {
+      method: "POST",
+      headers: { Authorization: `Token ${this.token}` },
+      body: form,
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.url) {
+      throw new Error("Failed to upload file to Replicate: " + JSON.stringify(json));
+    }
+
+    return json.url; // publicly accessible URL
+  };
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
