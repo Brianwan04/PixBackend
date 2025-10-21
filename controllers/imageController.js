@@ -176,24 +176,69 @@ uploadToReplicate = async (filePath) => {
     input,
   };
 
+  // Initial prediction request
   const res = await fetchFn(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${this.token}`,
+      Authorization: `Token ${this.token}`,
       "Content-Type": "application/json",
-      Prefer: `wait=${waitSeconds}`,
+      Prefer: `wait=${waitSeconds}`, // Initial wait
     },
     body: JSON.stringify(body),
   });
 
-  const json = await res.json().catch(() => ({}));
+  let json = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = json?.error?.message || json?.detail || JSON.stringify(json);
     const err = new Error(`Replicate API error ${res.status}: ${msg}`);
     err.response = json;
     throw err;
   }
-  return json;
+
+  // If already succeeded, return immediately
+  if (json.status === "succeeded") {
+    return json;
+  }
+
+  // If not succeeded, poll until completion or timeout
+  const pollUrl = json.urls?.get;
+  if (!pollUrl) {
+    throw new Error("No polling URL provided in prediction response");
+  }
+
+  const maxPollTime = 300000; // 5 minutes in milliseconds
+  const startTime = Date.now();
+  let delay = 1000; // Start with 1-second delay
+  const maxDelay = 10000; // Max 10-second delay
+
+  while (Date.now() - startTime < maxPollTime) {
+    await new Promise((resolve) => setTimeout(resolve, delay)); // Wait before polling
+
+    const pollRes = await fetchFn(pollUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Token ${this.token}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    json = await pollRes.json().catch(() => ({}));
+    if (!pollRes.ok) {
+      const msg = json?.error?.message || json?.detail || JSON.stringify(json);
+      const err = new Error(`Replicate poll error ${pollRes.status}: ${msg}`);
+      err.response = json;
+      throw err;
+    }
+
+    if (json.status === "succeeded" || json.status === "failed" || json.status === "canceled") {
+      return json; // Return final prediction
+    }
+
+    // Exponential backoff: increase delay up to maxDelay
+    delay = Math.min(delay * 2, maxDelay);
+  }
+
+  throw new Error("Prediction timed out after 5 minutes");
 };
 
 // 2) Add this helper to parse mixed Replicate outputs and prefer images
