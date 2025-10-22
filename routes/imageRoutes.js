@@ -52,6 +52,17 @@ router.post(
 );
 
 router.post(
+  "/ai-art",
+  upload.single("image"),
+  (req, res, next) => {
+    if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
+    else next();
+  },
+  imageController.aiArt,
+  cleanupTrackedFiles
+);
+
+router.post(
   "/magic-eraser",
   upload.single("image"),
   (req, res, next) => {

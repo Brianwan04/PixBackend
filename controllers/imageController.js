@@ -697,6 +697,86 @@ if (prediction.status !== 'succeeded') {
     }
   };
 
+  aiArt = async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No source image provided" });
+      }
+      const imageToBecomeUrl = req.body?.image_to_become;
+      if (!imageToBecomeUrl) {
+        return res.status(400).json({ error: "No image_to_become URL provided" });
+      }
+
+      const prompt = req.body?.prompt || "a person";
+      const prompt_strength = Number(req.body?.prompt_strength || 2);
+      const number_of_images = Number(req.body?.number_of_images || 1);
+      const denoising_strength = Number(req.body?.denoising_strength || 1);
+      const instant_id_strength = Number(req.body?.instant_id_strength || 1);
+      const image_to_become_noise = Number(req.body?.image_to_become_noise || 0.3);
+      const control_depth_strength = Number(req.body?.control_depth_strength || 0.8);
+      const image_to_become_strength = Number(req.body?.image_to_become_strength || 0.75);
+      const negative_prompt = req.body?.negative_prompt || "";
+
+      let imageInput;
+      try {
+        console.log(`[AI Art] Uploading source image to Replicate: ${req.file.path}`);
+        imageInput = await this.uploadToReplicate(req.file.path);
+        console.log(`[AI Art] Source image upload successful: ${imageInput}`);
+      } catch (uploadErr) {
+        console.error("[AI Art] Source image upload failed, falling back to base64:", uploadErr.message);
+        const base64 = await this.imageToBase64(req.file.path);
+        imageInput = `data:${req.file.mimetype};base64,${base64}`;
+        console.log("[AI Art] Using base64 data URL for source image");
+      }
+
+      const input = {
+        image: imageInput,
+        image_to_become: imageToBecomeUrl,
+        prompt,
+        prompt_strength,
+        number_of_images,
+        denoising_strength,
+        instant_id_strength,
+        image_to_become_noise,
+        control_depth_strength,
+        image_to_become_strength,
+        negative_prompt,
+      };
+
+      console.log("[AI Art] Creating prediction with input keys:", Object.keys(input));
+      const prediction = await this.runModel(
+        { id: "fofr/become-image:8d0b076a2aff3904dfcec3253c778e0310a68f78483c4699c7fd800f3051d2b3" },
+        input
+      );
+
+      console.log("[AI Art] Prediction response:", JSON.stringify(prediction));
+
+      if (prediction.status !== 'succeeded') {
+        const errMsg = prediction.error || 'Unknown error';
+        console.error("[AI Art] Prediction failed:", errMsg, "Full response:", JSON.stringify(prediction));
+        throw new Error(`Prediction failed: ${errMsg}`);
+      }
+
+      const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+      console.log("[AI Art] Prediction succeeded, image URL:", imageUrl);
+
+      const saved = await this.saveProcessedImage(imageUrl, "ai-art");
+      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+      res.json({
+        success: true,
+        message: "AI Art generated",
+        downloadUrl: saved.url,
+        operation: "ai_art",
+        prediction_id: prediction?.id || null,
+      });
+    } catch (error) {
+      console.error("[AI Art] Error:", error.response?.data || error.message || error);
+      await this.cleanupOnError(req.file);
+      res.status(500).json({ error: "AI Art generation failed", message: (error.response?.data || error.message) });
+    }
+  };
+
   // Get available styles
   getStyles = async (req, res) => {
     try {
