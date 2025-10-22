@@ -302,11 +302,13 @@ getImageUrlFromPredictionOutput = (output) => {
 
     if (!contentType.startsWith("image/")) {
       console.error(`[saveProcessedImage] Invalid content type: ${contentType}`);
+      console.error(`[saveProcessedImage] Response content: ${Buffer.from(response.data).toString('utf8')}`);
       throw new Error(`Invalid content type: ${contentType}`);
     }
 
     if (dataSize < 1000) {
       console.error(`[saveProcessedImage] Downloaded file too small: ${dataSize} bytes`);
+      console.error(`[saveProcessedImage] Response content: ${Buffer.from(response.data).toString('utf8')}`);
       throw new Error("Downloaded file is too small, likely invalid");
     }
 
@@ -319,9 +321,17 @@ getImageUrlFromPredictionOutput = (output) => {
     const fileStats = await fs.stat(filePath);
     console.log(`[saveProcessedImage] Saved file: ${filePath}, Size: ${fileStats.size} bytes`);
 
-    // Verify file accessibility
     const fileUrl = `/processed/${filename}`;
     console.log(`[saveProcessedImage] Generated URL: ${fileUrl}`);
+
+    // Verify file accessibility
+    try {
+      const verifyResponse = await axios.head(`http://127.0.0.1:5000${fileUrl}`, { timeout: 5000 });
+      console.log(`[saveProcessedImage] Local file verification status: ${verifyResponse.status}`);
+    } catch (verifyErr) {
+      console.error(`[saveProcessedImage] Local file verification failed: ${verifyErr.message}`);
+    }
+
     return { filename, path: filePath, url: fileUrl };
   } catch (error) {
     console.error(`[saveProcessedImage] Failed: ${error.message}`, error);
@@ -446,6 +456,7 @@ getImageUrlFromPredictionOutput = (output) => {
 
   // 4. AI Avatar Creator
   // Replace your existing createAvatar with this method
+  /*
 createAvatar = async (req, res) => {
   // helper to pick file node from req.file or req.files
   const pickFileFromRequest = (r) => {
@@ -569,6 +580,93 @@ if (prediction.status !== 'succeeded') {
     await this.cleanupOnError(file);
     const msg = error?.response?.data || error?.message || String(error);
     res.status(500).json({ error: "Avatar creation failed", message: msg });
+  }
+};*/
+createAvatar = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No image provided" });
+    }
+
+    const prompt = req.body?.prompt || "portrait, watercolor style, dramatic lighting";
+    const cfg_scale = Number(req.body?.cfg_scale || 1.2);
+    const num_steps = Number(req.body?.num_steps || 4);
+    const image_width = Number(req.body?.image_width || 768);
+    const image_height = Number(req.body?.image_height || 1024);
+    const num_samples = Number(req.body?.num_samples || 4);
+    const output_format = req.body?.output_format || "webp";
+    const identity_scale = Number(req.body?.identity_scale || 0.8);
+    const mix_identities = req.body?.mix_identities === "true" || false;
+    const output_quality = Number(req.body?.output_quality || 80);
+    const generation_mode = req.body?.generation_mode || "fidelity";
+    const negative_prompt = req.body?.negative_prompt || "flaws in the eyes, flaws in the face, flaws, lowres, non-HDRi, low quality, worst quality, artifacts noise, text, watermark, glitch, deformed, mutated, ugly, disfigured, hands, low resolution, partially rendered objects, deformed or partially rendered eyes, deformed, deformed eyeballs, cross-eyed, blurry";
+
+    let imageInput = null;
+    try {
+      console.log(`[Avatar] Uploading source image: ${req.file.path}`);
+      imageInput = await this.uploadToReplicate(req.file.path);
+      console.log(`[Avatar] Uploaded URL: ${imageInput}`);
+    } catch (uploadErr) {
+      console.error("[Avatar] uploadToReplicate failed:", uploadErr.message);
+      const base64 = await this.imageToBase64(req.file.path);
+      const mimeType = req.file.mimetype || mime.getType(req.file.originalname) || "image/jpeg";
+      imageInput = `data:${mimeType};base64,${base64}`;
+      console.log("[Avatar] Using base64 data URL");
+    }
+
+    const input = {
+      prompt,
+      cfg_scale,
+      num_steps,
+      image_width,
+      image_height,
+      num_samples,
+      output_format,
+      identity_scale,
+      mix_identities,
+      output_quality,
+      generation_mode,
+      main_face_image: imageInput,
+      negative_prompt,
+    };
+
+    console.log("[Avatar] Creating prediction with input:", Object.keys(input));
+    const prediction = await this.runModel(models.avatarCreator, input);
+    console.log("[Avatar] Prediction response:", JSON.stringify(prediction, null, 2));
+
+    if (prediction.status !== "succeeded") {
+      console.error("[Avatar] Prediction failed:", prediction.error || "Unknown error");
+      throw new Error(`Prediction failed: ${prediction.error || "Unknown error"}`);
+    }
+
+    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+    console.log("[Avatar] Extracted image URL:", imageUrl);
+
+    try {
+      const verifyResponse = await axios.head(imageUrl, { timeout: 10000 });
+      console.log("[Avatar] Image URL verification status:", verifyResponse.status, "Content-Type:", verifyResponse.headers["content-type"]);
+      if (verifyResponse.status >= 400) {
+        throw new Error(`Image URL inaccessible: ${verifyResponse.status}`);
+      }
+    } catch (verifyErr) {
+      console.error("[Avatar] Image URL verification failed:", verifyErr.message);
+      throw verifyErr;
+    }
+
+    const saved = await this.saveProcessedImage(imageUrl, "avatar");
+    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+    return res.json({
+      success: true,
+      message: "Avatar created",
+      downloadUrl: saved.url,
+      operation: "avatar_creator",
+      prediction_id: prediction?.id || null,
+    });
+  } catch (error) {
+    console.error("[Avatar] Error:", error.message, error);
+    if (req.file) await this.cleanupOnError(req.file);
+    return res.status(500).json({ error: "Avatar creation failed", message: error.message });
   }
 };
 
@@ -934,7 +1032,7 @@ aiArt = async (req, res) => {
       cfg_scale,
     };
 
-    console.log("[AI Art] Creating prediction with input:", input);
+    console.log("[AI Art] Creating prediction with input:", Object.keys(input));
     const prediction = await this.runModel(models.aiArt, input);
     console.log("[AI Art] Prediction response:", JSON.stringify(prediction, null, 2));
 
