@@ -733,54 +733,80 @@ if (prediction.status !== 'succeeded') {
     let imageInput = null;
     let usedUploadedUrl = false;
 
-    // 1) Upload to Replicate
+    // Upload to Replicate (or other file host)
     try {
       console.log(`[AI Art] Uploading source image to Replicate: ${req.file.path}`);
       const uploadedUrl = await this.uploadToReplicate(req.file.path);
       console.log(`[AI Art] Source image upload returned URL: ${uploadedUrl}`);
 
-      // 2) Inspect that uploaded URL: does it have an extension? does it provide content-type?
-      const hasExt = /\.[a-zA-Z0-9]{2,5}($|\?)/.test(uploadedUrl);
-      let contentType = null;
-      try {
-        const headOrGet = await axios.get(uploadedUrl, { method: "GET", responseType: "arraybuffer", timeout: 20000, validateStatus: null });
-        contentType = headOrGet.headers["content-type"];
-        console.log("[AI Art] fetched uploaded URL headers:", { contentType: contentType || "(none)", status: headOrGet.status });
-        // if content-type looks like image/* and URL has extension, try using uploaded URL directly
-        if (contentType && contentType.startsWith("image/") && hasExt) {
+      // Quick checks: is it data URI, replicate file URL, has extension?
+      if (typeof uploadedUrl === "string" && uploadedUrl.startsWith("data:")) {
+        imageInput = uploadedUrl;
+        usedUploadedUrl = false;
+        console.log("[AI Art] Upload returned data URI — using it directly.");
+      } else {
+        const looksLikeReplicateFile = typeof uploadedUrl === "string" && /\/v1\/files\//.test(uploadedUrl);
+        const hasExt = typeof uploadedUrl === "string" && /\.[a-zA-Z0-9]{2,5}($|\?)/.test(uploadedUrl);
+
+        // Try to fetch the uploaded URL to inspect headers & bytes
+        let fetchedBuffer = null;
+        let fetchedContentType = null;
+        let fetchedStatus = null;
+        try {
+          const fetched = await axios.get(uploadedUrl, {
+            method: "GET",
+            responseType: "arraybuffer",
+            timeout: 20000,
+            validateStatus: null,
+          });
+          fetchedStatus = fetched.status;
+          fetchedContentType = fetched.headers && (fetched.headers["content-type"] || fetched.headers["Content-Type"]);
+          console.log("[AI Art] fetched uploadedUrl status:", fetchedStatus, "content-type:", fetchedContentType);
+          if (fetchedStatus >= 200 && fetchedStatus < 300) {
+            fetchedBuffer = Buffer.from(fetched.data, "binary");
+          } else {
+            console.warn("[AI Art] fetching uploaded URL returned non-2xx status:", fetchedStatus);
+          }
+        } catch (fetchErr) {
+          console.warn("[AI Art] Error fetching uploadedUrl for inspection (will fallback to base64):", fetchErr && (fetchErr.message || fetchErr));
+        }
+
+        // Decide whether to use URL directly or convert to inline base64 data URI
+        const contentTypeLooksImage = fetchedContentType && /^image\//i.test(fetchedContentType);
+        if (!hasExt || looksLikeReplicateFile || !contentTypeLooksImage) {
+          // Convert to data URI (prefer fetched bytes, else local file)
+          if (fetchedBuffer) {
+            const contentType = fetchedContentType || req.file.mimetype || "image/jpeg";
+            const b64 = fetchedBuffer.toString("base64");
+            imageInput = `data:${contentType};base64,${b64}`;
+            console.log("[AI Art] Converted fetched uploadedUrl to data URI (content-type):", contentType, "b64 bytes:", b64.length);
+          } else {
+            // Fallback: read local file and create base64 data URI
+            console.log("[AI Art] No fetched buffer — creating data URI from local file fallback");
+            const localBase64 = await this.imageToBase64(req.file.path);
+            const mimeTypeFallback = req.file.mimetype || "image/jpeg";
+            imageInput = `data:${mimeTypeFallback};base64,${localBase64}`;
+            console.log("[AI Art] Created data URI from local file fallback (length):", localBase64.length);
+          }
+          usedUploadedUrl = false;
+        } else {
+          // Safe to use uploaded URL directly
           imageInput = uploadedUrl;
           usedUploadedUrl = true;
-          console.log("[AI Art] Will use uploaded URL directly (has extension & image content-type).");
-        } else {
-          console.log("[AI Art] Uploaded URL missing extension or content-type not image/* — will fallback to inline base64.");
-        }
-      } catch (fetchErr) {
-        console.warn("[AI Art] Error fetching uploaded URL for inspection (will fallback to base64):", fetchErr && (fetchErr.response?.data || fetchErr.message || fetchErr));
-      }
-
-      // If above didn't set imageInput, we'll create a data URI from the local file
-      if (!imageInput) {
-        try {
-          console.log("[AI Art] Converting local file to base64 data URI (fallback)...");
-          const base64 = await this.imageToBase64(req.file.path);
-          const mimeType = req.file.mimetype || (require('mime')?.getType(req.file.originalname) || "image/jpeg");
-          imageInput = `data:${mimeType};base64,${base64}`;
-          console.log("[AI Art] Created base64 data URI from local file (length bytes):", base64.length);
-        } catch (bErr) {
-          console.error("[AI Art] Failed to convert local file to base64:", bErr && (bErr.message || bErr));
-          throw bErr;
+          console.log("[AI Art] Uploaded URL looks safe — using URL directly.");
         }
       }
     } catch (uploadErr) {
-      console.error("[AI Art] uploadToReplicate failed, will fallback to local base64:", uploadErr && (uploadErr.response?.data || uploadErr.message || uploadErr));
-      // fallback to local base64
+      // Upload failed — fallback to reading local file as data URI
+      console.error("[AI Art] uploadToReplicate failed — using local base64 fallback:", uploadErr && (uploadErr.response?.data || uploadErr.message || uploadErr));
       const base64 = await this.imageToBase64(req.file.path);
-      const mimeType = req.file.mimetype || (require('mime')?.getType(req.file.originalname) || "image/jpeg");
+      const mimeType = req.file.mimetype || (require("mime")?.getType(req.file.originalname) || "image/jpeg");
       imageInput = `data:${mimeType};base64,${base64}`;
+      usedUploadedUrl = false;
       console.log("[AI Art] Using base64 data URL for source image (upload failed)");
     }
 
-    // Build input for model
+    // Build input for the model
     const input = {
       image: imageInput,
       image_to_become: imageToBecomeUrl,
@@ -800,45 +826,56 @@ if (prediction.status !== 'succeeded') {
     console.log("[AI Art] Creating prediction with input keys:", Object.keys(input), "usedUploadedUrl:", usedUploadedUrl);
     const prediction = await this.runModel(models.aiArt, input);
 
-    console.log("[AI Art] Prediction response status:", prediction?.status);
+    console.log("[AI Art] Prediction response:", JSON.stringify(prediction));
+
     if (prediction.status !== "succeeded") {
       const errMsg = prediction.error || "Unknown error";
-      console.error("[AI Art] Prediction failed:", errMsg, "full:", JSON.stringify(prediction));
+      console.error("[AI Art] Prediction failed:", errMsg, "full response:", JSON.stringify(prediction));
 
-      // If model complains about file type, attempt a retry with guaranteed inline base64
-      if (!imageInput.startsWith("data:")) {
-        console.log("[AI Art] Retrying with inline base64 because initial input was URL and model failed.");
-        const base64 = await this.imageToBase64(req.file.path);
-        const mimeType = req.file.mimetype || (require('mime')?.getType(req.file.originalname) || "image/jpeg");
-        const fallbackImage = `data:${mimeType};base64,${base64}`;
-        const retryInput = { ...input, image: fallbackImage };
-        const retryPrediction = await this.runModel(models.aiArt, retryInput);
-        if (retryPrediction.status !== "succeeded") {
-          console.error("[AI Art] Retry prediction failed:", JSON.stringify(retryPrediction));
-          throw new Error(retryPrediction.error || "Retry prediction failed");
+      // If it's likely a file-type issue and we didn't already use inline base64, retry forcing local base64
+      if ((!imageInput || !String(imageInput).startsWith("data:")) && (String(errMsg).toLowerCase().includes("unsupported file") || String(errMsg).toLowerCase().includes("unsupported file type"))) {
+        console.log("[AI Art] Detected unsupported file error — retrying with inline base64 from local file.");
+        try {
+          const base64 = await this.imageToBase64(req.file.path);
+          const mimeType = req.file.mimetype || (require("mime")?.getType(req.file.originalname) || "image/jpeg");
+          const fallbackImage = `data:${mimeType};base64,${base64}`;
+          const retryInput = { ...input, image: fallbackImage };
+          const retryPrediction = await this.runModel(models.aiArt, retryInput);
+
+          if (retryPrediction.status !== "succeeded") {
+            console.error("[AI Art] Retry prediction failed:", JSON.stringify(retryPrediction));
+            throw new Error(retryPrediction.error || "Retry prediction failed");
+          }
+
+          const imageUrlRetry = this.getImageUrlFromPredictionOutput(retryPrediction.output);
+          const savedRetry = await this.saveProcessedImage(imageUrlRetry, "ai-art");
+          if (req.filesToCleanup) req.filesToCleanup.push(savedRetry.path);
+          return res.json({
+            success: true,
+            message: "AI Art generated (retry)",
+            downloadUrl: savedRetry.url,
+            operation: "ai_art",
+            prediction_id: retryPrediction?.id || null,
+          });
+        } catch (retryErr) {
+          console.error("[AI Art] Retry also failed:", retryErr && (retryErr.response?.data || retryErr.message || retryErr));
+          // allow outer catch to handle response
+          throw retryErr;
         }
-        const imageUrlRetry = this.getImageUrlFromPredictionOutput(retryPrediction.output);
-        const savedRetry = await this.saveProcessedImage(imageUrlRetry, "ai-art");
-        if (req.filesToCleanup) req.filesToCleanup.push(savedRetry.path);
-        return res.json({
-          success: true,
-          message: "AI Art generated (retry)",
-          downloadUrl: savedRetry.url,
-          operation: "ai_art",
-          prediction_id: retryPrediction?.id || null,
-        });
       }
 
+      // Not a retryable type error or retry exhausted
       throw new Error(`Prediction failed: ${errMsg}`);
     }
 
+    // Successful prediction
     const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
     console.log("[AI Art] Prediction succeeded, image URL:", imageUrl);
 
     const saved = await this.saveProcessedImage(imageUrl, "ai-art");
     if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
 
-    res.json({
+    return res.json({
       success: true,
       message: "AI Art generated",
       downloadUrl: saved.url,
@@ -847,15 +884,13 @@ if (prediction.status !== 'succeeded') {
     });
   } catch (error) {
     console.error("[AI Art] Error:", error && (error.response?.data || error.message || error));
-    // cleanup any uploaded file saved by multer
+    // cleanup uploaded/multer file
     const file = req.file;
     if (file) await this.cleanupOnError(file);
     const msg = error?.response?.data || error?.message || String(error);
-    res.status(500).json({ error: "AI Art generation failed", message: msg });
+    return res.status(500).json({ error: "AI Art generation failed", message: msg });
   }
 };
-
-
 
   // Get available styles
   getStyles = async (req, res) => {
