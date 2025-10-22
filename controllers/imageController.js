@@ -4,7 +4,6 @@ const fs = require("fs").promises;
 const path = require("path");
 const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
-const { uploadToReplicate, imageToBase64, saveProcessedImage, cleanupOnError } = require("../utils/imageUtils");
 require("dotenv").config();
 
 // controllers/imageController.js
