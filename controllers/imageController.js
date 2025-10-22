@@ -2,13 +2,12 @@
 const axios = require("axios");
 const fs = require("fs").promises;
 const path = require("path");
+const FormData = require("form-data");
+const fsExtra = require("fs");
+const mime = require("mime"); // Explicit import
 const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
 require("dotenv").config();
-
-// controllers/imageController.js
-const FormData = require("form-data");
-const fsExtra = require("fs"); // node fs for createReadStream
 
 /*uploadToReplicate = async (filePath) => {
   const form = new FormData();
@@ -33,7 +32,6 @@ let fetchFn;
 if (typeof globalThis.fetch === "function") {
   fetchFn = globalThis.fetch.bind(globalThis);
 } else {
-  // dynamic import fallback for node-fetch (v3 is ESM)
   fetchFn = (...args) => import("node-fetch").then((m) => m.default(...args));
 }
 
@@ -41,31 +39,16 @@ class ImageController {
   constructor() {
     this.token = process.env.REPLICATE_API_TOKEN;
     if (!this.token) {
-      console.warn(
-        "Warning: REPLICATE_API_TOKEN is not set. Replicate requests will fail until you set it."
-      );
+      console.warn("Warning: REPLICATE_API_TOKEN is not set.");
     }
-    this.versionCache = {}; // cache model slug -> version id
+    this.versionCache = {};
   }
 
-// place this inside class ImageController { ... } (e.g. right after the constructor)
-// inside class ImageController { ... }
-uploadToReplicate = async (filePath) => {
-  const axiosLib = require("axios");
-  const FormData = require("form-data");
-  const fsExtra = require("fs");
-  const path = require("path");
-
-  try {
+  uploadToReplicate = async (filePath) => {
     const form = new FormData();
     const filename = path.basename(filePath);
-    // try to detect mime-type if you have mime lib, else default
-    const mimeType = (require('mime')?.getType(filename)) || 'image/jpeg';
-
-    // IMPORTANT: use field name 'file' and pass filename so the receiver sees the name
+    const mimeType = mime.getType(filename) || "image/jpeg"; // Use mime directly
     form.append("file", fsExtra.createReadStream(filePath), filename);
-
-    // Some endpoints like extra metadata fields are useful — keep them if needed
     form.append("filename", filename);
     form.append("type", mimeType);
 
@@ -74,21 +57,17 @@ uploadToReplicate = async (filePath) => {
       ...form.getHeaders(),
     };
 
-    // compute length if possible
     try {
       const length = await new Promise((resolve, reject) => {
-        form.getLength((err, len) => {
-          if (err) return reject(err);
-          resolve(len);
-        });
+        form.getLength((err, len) => (err ? reject(err) : resolve(len)));
       });
       if (length) headers["Content-Length"] = length;
     } catch (lenErr) {
-      console.warn("[uploadToReplicate] getLength failed:", lenErr && lenErr.message);
+      console.warn("[uploadToReplicate] getLength failed:", lenErr.message);
     }
 
     const url = "https://api.replicate.com/v1/files";
-    const res = await axiosLib.post(url, form, {
+    const res = await axios.post(url, form, {
       headers,
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
@@ -96,28 +75,17 @@ uploadToReplicate = async (filePath) => {
       validateStatus: null,
     });
 
-    const data = res.data || {};
-    console.log("[uploadToReplicate] replicate response status:", res.status);
-    console.log("[uploadToReplicate] replicate response data keys:", Object.keys(data));
-
+    console.log("[uploadToReplicate] Response status:", res.status, "data:", res.data);
     if (res.status >= 400) {
-      console.error("[uploadToReplicate] failed response:", res.status, data);
-      throw new Error("Failed to upload file to Replicate: " + JSON.stringify(data));
+      throw new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
     }
 
-    // Replicate usually returns URLs in data.urls.get
-    const publicUrl = data.urls?.get || data.url || data.upload_url || null;
+    const publicUrl = res.data.urls?.get || res.data.url;
     if (!publicUrl) {
-      console.warn("[uploadToReplicate] no public URL returned, full response:", JSON.stringify(data));
-      throw new Error("Upload succeeded but no URL returned");
+      throw new Error("No public URL returned");
     }
-
     return publicUrl;
-  } catch (err) {
-    console.error("[uploadToReplicate] exception:", err && (err.response?.data || err.message || err));
-    throw err;
-  }
-};
+  };
 
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
@@ -320,21 +288,46 @@ getImageUrlFromPredictionOutput = (output) => {
 
   // Save processed image
   saveProcessedImage = async (imageUrl, prefix = "processed") => {
-    try {
-      const response = await axios.get(imageUrl, {
-        responseType: "arraybuffer",
-        timeout: 30000,
-      });
-      const filename = `${prefix}-${Date.now()}.png`;
-      const dir = path.join(__dirname, "../public/processed");
-      await fs.mkdir(dir, { recursive: true });
-      const filePath = path.join(dir, filename);
-      await fs.writeFile(filePath, response.data);
-      return { filename, path: filePath, url: `/processed/${filename}` };
-    } catch (error) {
-      throw new Error(`Failed to save image: ${error.message}`);
+  try {
+    console.log(`[saveProcessedImage] Downloading image from: ${imageUrl}`);
+    const response = await axios.get(imageUrl, {
+      responseType: "arraybuffer",
+      timeout: 30000,
+      validateStatus: (status) => status >= 200 && status < 300,
+    });
+
+    const contentType = response.headers["content-type"];
+    const dataSize = response.data.length;
+    console.log(`[saveProcessedImage] Content-Type: ${contentType}, Size: ${dataSize} bytes`);
+
+    if (!contentType.startsWith("image/")) {
+      console.error(`[saveProcessedImage] Invalid content type: ${contentType}`);
+      throw new Error(`Invalid content type: ${contentType}`);
     }
-  };
+
+    if (dataSize < 1000) {
+      console.error(`[saveProcessedImage] Downloaded file too small: ${dataSize} bytes`);
+      throw new Error("Downloaded file is too small, likely invalid");
+    }
+
+    const filename = `${prefix}-${Date.now()}.png`;
+    const dir = path.join(__dirname, "../public/processed");
+    await fs.mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, filename);
+    await fs.writeFile(filePath, response.data);
+
+    const fileStats = await fs.stat(filePath);
+    console.log(`[saveProcessedImage] Saved file: ${filePath}, Size: ${fileStats.size} bytes`);
+
+    // Verify file accessibility
+    const fileUrl = `/processed/${filename}`;
+    console.log(`[saveProcessedImage] Generated URL: ${fileUrl}`);
+    return { filename, path: filePath, url: fileUrl };
+  } catch (error) {
+    console.error(`[saveProcessedImage] Failed: ${error.message}`, error);
+    throw new Error(`Failed to save image: ${error.message}`);
+  }
+};
 
   // Wrapper to run a model by its model entry from utils/replicateModels
   runModel = async (modelEntry, input = {}) => {
@@ -706,7 +699,7 @@ if (prediction.status !== 'succeeded') {
         .json({ error: "Mockup creation failed", message: (error.response?.detail || error.message) });
     }
   };
-
+/*
   aiArt = async (req, res) => {
   try {
     if (!req.file) {
@@ -889,8 +882,98 @@ if (prediction.status !== 'succeeded') {
     const msg = error?.response?.data || error?.message || String(error);
     return res.status(500).json({ error: "AI Art generation failed", message: msg });
   }
-};
+};*/
+aiArt = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No source image provided" });
+    }
+    const imageToBecomeUrl = req.body?.image_to_become;
+    if (!imageToBecomeUrl) {
+      return res.status(400).json({ error: "No image_to_become URL provided" });
+    }
 
+    const prompt = req.body?.prompt || "a person";
+    const prompt_strength = Number(req.body?.prompt_strength || 2);
+    const number_of_images = Number(req.body?.number_of_images || 1);
+    const denoising_strength = Number(req.body?.denoising_strength || 1);
+    const instant_id_strength = Number(req.body?.instant_id_strength || 1);
+    const image_to_become_noise = Number(req.body?.image_to_become_noise || 0.3);
+    const control_depth_strength = Number(req.body?.control_depth_strength || 0.8);
+    const image_to_become_strength = Number(req.body?.image_to_become_strength || 0.75);
+    const negative_prompt = req.body?.negative_prompt || "";
+    const num_steps = Number(req.body?.num_steps || 30);
+    const cfg_scale = Number(req.body?.cfg_scale || 1.5);
+
+    let imageInput = null;
+    try {
+      console.log(`[AI Art] Uploading source image: ${req.file.path}`);
+      imageInput = await this.uploadToReplicate(req.file.path);
+      console.log(`[AI Art] Uploaded URL: ${imageInput}`);
+    } catch (uploadErr) {
+      console.error("[AI Art] uploadToReplicate failed:", uploadErr.message);
+      const base64 = await this.imageToBase64(req.file.path);
+      const mimeType = req.file.mimetype || mime.getType(req.file.originalname) || "image/jpeg";
+      imageInput = `data:${mimeType};base64,${base64}`;
+      console.log("[AI Art] Using base64 data URL");
+    }
+
+    const input = {
+      image: imageInput,
+      image_to_become: imageToBecomeUrl,
+      prompt,
+      prompt_strength,
+      number_of_images,
+      denoising_strength,
+      instant_id_strength,
+      image_to_become_noise,
+      control_depth_strength,
+      image_to_become_strength,
+      negative_prompt,
+      num_steps,
+      cfg_scale,
+    };
+
+    console.log("[AI Art] Creating prediction with input:", input);
+    const prediction = await this.runModel(models.aiArt, input);
+    console.log("[AI Art] Prediction response:", JSON.stringify(prediction, null, 2));
+
+    if (prediction.status !== "succeeded") {
+      console.error("[AI Art] Prediction failed:", prediction.error || "Unknown error");
+      throw new Error(`Prediction failed: ${prediction.error || "Unknown error"}`);
+    }
+
+    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+    console.log("[AI Art] Extracted image URL:", imageUrl);
+
+    // Verify image URL
+    try {
+      const verifyResponse = await axios.head(imageUrl, { timeout: 10000 });
+      console.log("[AI Art] Image URL verification status:", verifyResponse.status, "Content-Type:", verifyResponse.headers["content-type"]);
+      if (verifyResponse.status >= 400) {
+        throw new Error(`Image URL inaccessible: ${verifyResponse.status}`);
+      }
+    } catch (verifyErr) {
+      console.error("[AI Art] Image URL verification failed:", verifyErr.message);
+      throw verifyErr;
+    }
+
+    const saved = await this.saveProcessedImage(imageUrl, "ai-art");
+    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+    return res.json({
+      success: true,
+      message: "AI Art generated",
+      downloadUrl: saved.url,
+      operation: "ai_art",
+      prediction_id: prediction?.id || null,
+    });
+  } catch (error) {
+    console.error("[AI Art] Error:", error.message, error);
+    if (req.file) await this.cleanupOnError(req.file);
+    return res.status(500).json({ error: "AI Art generation failed", message: error.message });
+  }
+};
   // Get available styles
   getStyles = async (req, res) => {
     try {
