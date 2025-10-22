@@ -56,30 +56,37 @@ uploadToReplicate = async (filePath) => {
   const FormData = require("form-data");
   const fsExtra = require("fs");
   const path = require("path");
+
   try {
     const form = new FormData();
-    const mimeType = 'image/jpeg'; // Adjust dynamically if needed (e.g., use 'mime-types' lib)
     const filename = path.basename(filePath);
-    form.append("content", fsExtra.createReadStream(filePath)); // Field: 'content'
-    form.append("filename", filename); // Required
-    form.append("type", mimeType); // Optional but recommended
+    // try to detect mime-type if you have mime lib, else default
+    const mimeType = (require('mime')?.getType(filename)) || 'image/jpeg';
+
+    // IMPORTANT: use field name 'file' and pass filename so the receiver sees the name
+    form.append("file", fsExtra.createReadStream(filePath), filename);
+
+    // Some endpoints like extra metadata fields are useful — keep them if needed
+    form.append("filename", filename);
+    form.append("type", mimeType);
 
     const headers = {
-      Authorization: `Token ${this.token}`, // 'Token' prefix
+      Authorization: `Token ${this.token}`,
       ...form.getHeaders(),
     };
 
-    // Compute Content-Length
-    const length = await new Promise((resolve, reject) => {
-      form.getLength((err, len) => {
-        if (err) return reject(err);
-        resolve(len);
+    // compute length if possible
+    try {
+      const length = await new Promise((resolve, reject) => {
+        form.getLength((err, len) => {
+          if (err) return reject(err);
+          resolve(len);
+        });
       });
-    }).catch((err) => {
-      console.warn("[uploadToReplicate] form.getLength failed:", err.message);
-      return null;
-    });
-    if (length) headers["Content-Length"] = length;
+      if (length) headers["Content-Length"] = length;
+    } catch (lenErr) {
+      console.warn("[uploadToReplicate] getLength failed:", lenErr && lenErr.message);
+    }
 
     const url = "https://api.replicate.com/v1/files";
     const res = await axiosLib.post(url, form, {
@@ -91,26 +98,28 @@ uploadToReplicate = async (filePath) => {
     });
 
     const data = res.data || {};
+    console.log("[uploadToReplicate] replicate response status:", res.status);
+    console.log("[uploadToReplicate] replicate response data keys:", Object.keys(data));
+
     if (res.status >= 400) {
-      console.error(`[uploadToReplicate] failed status: ${res.status}`);
-      console.error("[uploadToReplicate] headers:", res.headers);
-      console.error("[uploadToReplicate] body:", JSON.stringify(data));
+      console.error("[uploadToReplicate] failed response:", res.status, data);
       throw new Error("Failed to upload file to Replicate: " + JSON.stringify(data));
     }
 
-    // Extract URL: use data.urls.get (authenticated fetch URL for models)
-    const publicUrl = data.urls?.get;
+    // Replicate usually returns URLs in data.urls.get
+    const publicUrl = data.urls?.get || data.url || data.upload_url || null;
     if (!publicUrl) {
-      console.error("[uploadToReplicate] unexpected response:", JSON.stringify(data));
-      throw new Error("Upload succeeded but no usable URL returned: " + JSON.stringify(data));
+      console.warn("[uploadToReplicate] no public URL returned, full response:", JSON.stringify(data));
+      throw new Error("Upload succeeded but no URL returned");
     }
 
     return publicUrl;
   } catch (err) {
-    console.error("[uploadToReplicate] exception:", err.response?.data || err.message || err);
+    console.error("[uploadToReplicate] exception:", err && (err.response?.data || err.message || err));
     throw err;
   }
 };
+
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
@@ -721,38 +730,57 @@ if (prediction.status !== 'succeeded') {
     const num_steps = Number(req.body?.num_steps || 30);
     const cfg_scale = Number(req.body?.cfg_scale || 1.5);
 
-    let imageInput;
+    let imageInput = null;
+    let usedUploadedUrl = false;
+
+    // 1) Upload to Replicate
     try {
       console.log(`[AI Art] Uploading source image to Replicate: ${req.file.path}`);
-      imageInput = await this.uploadToReplicate(req.file.path);
-      console.log(`[AI Art] Source image upload successful: ${imageInput}`);
+      const uploadedUrl = await this.uploadToReplicate(req.file.path);
+      console.log(`[AI Art] Source image upload returned URL: ${uploadedUrl}`);
 
-      // --- NEW: if returned URL lacks an extension, fetch & convert to data: URL ---
+      // 2) Inspect that uploaded URL: does it have an extension? does it provide content-type?
+      const hasExt = /\.[a-zA-Z0-9]{2,5}($|\?)/.test(uploadedUrl);
+      let contentType = null;
       try {
-        const hasExt = /\.[a-zA-Z0-9]{2,5}($|\?)/.test(imageInput);
-        const isDataUri = typeof imageInput === "string" && imageInput.startsWith("data:");
-        if (!hasExt && !isDataUri) {
-          console.log("[AI Art] Uploaded file URL lacks extension — fetching and converting to data URL fallback");
-          const fetched = await axios.get(imageInput, { responseType: "arraybuffer", timeout: 30000 });
-          const contentType = fetched.headers["content-type"] || "image/jpeg";
-          const b64 = Buffer.from(fetched.data, "binary").toString("base64");
-          imageInput = `data:${contentType};base64,${b64}`;
-          console.log("[AI Art] Converted uploaded file to data URL fallback");
+        const headOrGet = await axios.get(uploadedUrl, { method: "GET", responseType: "arraybuffer", timeout: 20000, validateStatus: null });
+        contentType = headOrGet.headers["content-type"];
+        console.log("[AI Art] fetched uploaded URL headers:", { contentType: contentType || "(none)", status: headOrGet.status });
+        // if content-type looks like image/* and URL has extension, try using uploaded URL directly
+        if (contentType && contentType.startsWith("image/") && hasExt) {
+          imageInput = uploadedUrl;
+          usedUploadedUrl = true;
+          console.log("[AI Art] Will use uploaded URL directly (has extension & image content-type).");
+        } else {
+          console.log("[AI Art] Uploaded URL missing extension or content-type not image/* — will fallback to inline base64.");
         }
-      } catch (convertErr) {
-        console.warn("[AI Art] Could not fetch/convert uploaded URL to data URI. Will fallback to reading local file if needed.", convertErr && (convertErr.response?.data || convertErr.message || convertErr));
-        // fallback to reading local file below if model rejects the URL
+      } catch (fetchErr) {
+        console.warn("[AI Art] Error fetching uploaded URL for inspection (will fallback to base64):", fetchErr && (fetchErr.response?.data || fetchErr.message || fetchErr));
       }
 
+      // If above didn't set imageInput, we'll create a data URI from the local file
+      if (!imageInput) {
+        try {
+          console.log("[AI Art] Converting local file to base64 data URI (fallback)...");
+          const base64 = await this.imageToBase64(req.file.path);
+          const mimeType = req.file.mimetype || (require('mime')?.getType(req.file.originalname) || "image/jpeg");
+          imageInput = `data:${mimeType};base64,${base64}`;
+          console.log("[AI Art] Created base64 data URI from local file (length bytes):", base64.length);
+        } catch (bErr) {
+          console.error("[AI Art] Failed to convert local file to base64:", bErr && (bErr.message || bErr));
+          throw bErr;
+        }
+      }
     } catch (uploadErr) {
-      console.error("[AI Art] Source image upload failed, falling back to base64:", uploadErr && (uploadErr.response?.data || uploadErr.message || uploadErr));
+      console.error("[AI Art] uploadToReplicate failed, will fallback to local base64:", uploadErr && (uploadErr.response?.data || uploadErr.message || uploadErr));
+      // fallback to local base64
       const base64 = await this.imageToBase64(req.file.path);
-      const mimeType = req.file.mimetype || (path.extname(req.file.originalname).toLowerCase() === ".png" ? "image/png" : "image/jpeg");
+      const mimeType = req.file.mimetype || (require('mime')?.getType(req.file.originalname) || "image/jpeg");
       imageInput = `data:${mimeType};base64,${base64}`;
       console.log("[AI Art] Using base64 data URL for source image (upload failed)");
     }
 
-    // Build input object
+    // Build input for model
     const input = {
       image: imageInput,
       image_to_become: imageToBecomeUrl,
@@ -769,43 +797,38 @@ if (prediction.status !== 'succeeded') {
       cfg_scale,
     };
 
-    console.log("[AI Art] Creating prediction with input keys:", Object.keys(input));
+    console.log("[AI Art] Creating prediction with input keys:", Object.keys(input), "usedUploadedUrl:", usedUploadedUrl);
     const prediction = await this.runModel(models.aiArt, input);
 
-    console.log("[AI Art] Prediction response:", JSON.stringify(prediction));
-
+    console.log("[AI Art] Prediction response status:", prediction?.status);
     if (prediction.status !== "succeeded") {
       const errMsg = prediction.error || "Unknown error";
-      console.error("[AI Art] Prediction failed:", errMsg, "Full response:", JSON.stringify(prediction));
-      // Special handling: if model rejected due to file type, try forcing base64 local-file fallback
-      if (errMsg.toLowerCase().includes("unsupported file type") || errMsg.toLowerCase().includes("unsupported file")) {
-        console.log("[AI Art] Detected unsupported file type error — retrying with base64 inline from local file");
-        try {
-          const base64 = await this.imageToBase64(req.file.path);
-          const mimeType = req.file.mimetype || "image/jpeg";
-          const fallbackImage = `data:${mimeType};base64,${base64}`;
-          const retryInput = { ...input, image: fallbackImage };
-          const retryPrediction = await this.runModel(models.aiArt, retryInput);
-          if (retryPrediction.status !== "succeeded") {
-            console.error("[AI Art] Retry prediction failed:", JSON.stringify(retryPrediction));
-            throw new Error(retryPrediction.error || "Retry prediction failed");
-          }
-          // On success, continue with retryPrediction
-          const imageUrlRetry = this.getImageUrlFromPredictionOutput(retryPrediction.output);
-          const savedRetry = await this.saveProcessedImage(imageUrlRetry, "ai-art");
-          if (req.filesToCleanup) req.filesToCleanup.push(savedRetry.path);
-          return res.json({
-            success: true,
-            message: "AI Art generated (retry)",
-            downloadUrl: savedRetry.url,
-            operation: "ai_art",
-            prediction_id: retryPrediction?.id || null,
-          });
-        } catch (retryErr) {
-          console.error("[AI Art] Retry also failed:", retryErr && (retryErr.response?.data || retryErr.message || retryErr));
-          throw retryErr;
+      console.error("[AI Art] Prediction failed:", errMsg, "full:", JSON.stringify(prediction));
+
+      // If model complains about file type, attempt a retry with guaranteed inline base64
+      if (!imageInput.startsWith("data:")) {
+        console.log("[AI Art] Retrying with inline base64 because initial input was URL and model failed.");
+        const base64 = await this.imageToBase64(req.file.path);
+        const mimeType = req.file.mimetype || (require('mime')?.getType(req.file.originalname) || "image/jpeg");
+        const fallbackImage = `data:${mimeType};base64,${base64}`;
+        const retryInput = { ...input, image: fallbackImage };
+        const retryPrediction = await this.runModel(models.aiArt, retryInput);
+        if (retryPrediction.status !== "succeeded") {
+          console.error("[AI Art] Retry prediction failed:", JSON.stringify(retryPrediction));
+          throw new Error(retryPrediction.error || "Retry prediction failed");
         }
+        const imageUrlRetry = this.getImageUrlFromPredictionOutput(retryPrediction.output);
+        const savedRetry = await this.saveProcessedImage(imageUrlRetry, "ai-art");
+        if (req.filesToCleanup) req.filesToCleanup.push(savedRetry.path);
+        return res.json({
+          success: true,
+          message: "AI Art generated (retry)",
+          downloadUrl: savedRetry.url,
+          operation: "ai_art",
+          prediction_id: retryPrediction?.id || null,
+        });
       }
+
       throw new Error(`Prediction failed: ${errMsg}`);
     }
 
@@ -824,13 +847,14 @@ if (prediction.status !== 'succeeded') {
     });
   } catch (error) {
     console.error("[AI Art] Error:", error && (error.response?.data || error.message || error));
-    // ensure uploaded file cleanup
+    // cleanup any uploaded file saved by multer
     const file = req.file;
     if (file) await this.cleanupOnError(file);
     const msg = error?.response?.data || error?.message || String(error);
     res.status(500).json({ error: "AI Art generation failed", message: msg });
   }
 };
+
 
 
   // Get available styles
