@@ -5,6 +5,7 @@ const rateLimit = require("express-rate-limit");
 const morgan = require("morgan");
 const path = require("path");
 const fs = require("fs").promises;
+const multer = require("multer");
 require("dotenv").config();
 
 const imageRoutes = require("./routes/imageRoutes");
@@ -64,6 +65,19 @@ app.use(
     credentials: true,
   })
 );
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError || (err && err.message && err.message.includes('Unexpected field'))) {
+    console.error('=== MULTER ERROR ===');
+    console.error('err.code/message:', err.code || err.message);
+    console.error('Request Content-Type:', req.headers['content-type']);
+    console.error('Request body keys:', Object.keys(req.body || {}));
+    console.error('Request files (if any):', (req.files || []).map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+    return res.status(400).json({ error: 'File upload error', message: err.message, code: err.code || 'MULTER_ERROR' });
+  }
+  next(err);
+});
+
 
 // Rate limiting
 app.use(
