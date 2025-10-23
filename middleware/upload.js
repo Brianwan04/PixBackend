@@ -4,7 +4,7 @@ const fs = require("fs").promises;
 
 const UPLOAD_DIR = path.join(__dirname, "../../temp/uploads");
 
-// Create upload directory
+// Initialize upload directory
 const initializeUploadDir = async () => {
   try {
     await fs.mkdir(UPLOAD_DIR, { recursive: true });
@@ -23,14 +23,13 @@ const storage = multer.diskStorage({
   },
 });
 
-// ✅ NO FILE FILTER = NO "Unexpected field" EVER
-const upload = multer({ 
+// Multer configuration to accept multiple 'images' fields
+const upload = multer({
   storage,
-  limits: { 
-    fileSize: 50 * 1024 * 1024,  // 50MB
-    files: 10
-  }
-  // ✅ NO fileFilter property = accepts ANY field name
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB
+    files: 4, // Allow up to 4 files
+  },
 });
 
 module.exports = upload;

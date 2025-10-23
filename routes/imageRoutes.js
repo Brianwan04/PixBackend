@@ -100,10 +100,11 @@ router.post(
 // AI-ART (accept up to 2 images: source + optional target file)
 router.post(
   "/create-avatar",
-  manualUpload, // ✅ Replaces Multer
+  upload.array("images", 4), // Matches frontend's 'images' field, allows up to 4 files
   (req, res, next) => {
-    console.log('🎉 /create-avatar FILES:', req.files?.length || 0);
-    console.log('Files:', req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+    console.log("[/create-avatar] Files received:", req.files?.length || 0);
+    console.log("[/create-avatar] File details:", req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+    console.log("[/create-avatar] Body:", req.body);
     if (req.files && req.files.length > 0) {
       req.files.forEach(file => trackFileForCleanup(file.path)(req, res, () => {}));
     }
@@ -113,13 +114,14 @@ router.post(
   cleanupTrackedFiles
 );
 
-// Route for /ai-art
+// Route for /ai-art (also updated to handle 'images')
 router.post(
   "/ai-art",
-  manualUpload, // ✅ Replaces Multer
+  upload.array("images", 4), // Matches frontend's 'images' field
   (req, res, next) => {
-    console.log('🎉 /ai-art FILES:', req.files?.length || 0);
-    console.log('Files:', req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+    console.log("[/ai-art] Files received:", req.files?.length || 0);
+    console.log("[/ai-art] File details:", req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+    console.log("[/ai-art] Body:", req.body);
     if (req.files && req.files.length > 0) {
       req.files.forEach(file => trackFileForCleanup(file.path)(req, res, () => {}));
     }
