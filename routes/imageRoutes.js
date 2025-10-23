@@ -98,10 +98,10 @@ router.post(
 // routes/imageRoutes.js
 // AI-ART (accept up to 2 images: source + optional target file)
 router.post("/create-avatar", 
-  upload.any(),  // ✅ Accepts ANY field name
+  upload.any(),  // ✅ Accepts ANY field name including 'images'
   (req, res, next) => {
-    console.log('✅ /create-avatar FILES:', req.files?.length || 0);
-    console.log('Files:', req.files?.map(f => f.fieldname));
+    console.log('✅ /create-avatar FILES RECEIVED:', req.files?.length || 0);
+    console.log('Field names:', req.files?.map(f => f.fieldname));
     next();
   },
   registerFilesForCleanupIfPresent,
@@ -109,11 +109,21 @@ router.post("/create-avatar",
   cleanupTrackedFiles
 );
 
-// ✅ ROUTE 2: AI Art (FIXED)
 router.post("/ai-art", 
-  upload.any(),
+  upload.any(),  // ✅ Accepts ANY field name including 'images'
+  (req, res, next) => {
+    console.log('✅ /ai-art FILES RECEIVED:', req.files?.length || 0);
+    next();
+  },
   registerFilesForCleanupIfPresent,
   imageController.aiArt,
+  cleanupTrackedFiles
+);
+
+router.post("/avatar-creator", 
+  upload.any(),
+  registerFilesForCleanupIfPresent,
+  imageController.createAvatar,
   cleanupTrackedFiles
 );
 
