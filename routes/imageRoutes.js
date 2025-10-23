@@ -95,9 +95,10 @@ router.post(
 // Keep avatar route accepting 'main_face_image' as the file field
 // Accept either "main_face_image" or "image" (explicit fields)
 // routes/imageRoutes.js
+// AI-ART (accept up to 2 images: source + optional target file)
 router.post(
   "/ai-art",
-  upload.any(), // temporary for debugging
+  upload.array('images', 2), // expects form fields named 'images'
   (req, res, next) => {
     console.log('=== /ai-art incoming ===');
     console.log('content-type:', req.headers['content-type']);
@@ -110,9 +111,10 @@ router.post(
   cleanupTrackedFiles
 );
 
+// AVATAR CREATOR (accept up to 4 images: main + up to 3 aux)
 router.post(
   "/avatar-creator",
-  upload.any(), // temporary for debugging
+  upload.array('images', 4), // expects form fields named 'images'
   (req, res, next) => {
     console.log('=== /avatar-creator incoming ===');
     console.log('content-type:', req.headers['content-type']);
@@ -124,6 +126,7 @@ router.post(
   imageController.createAvatar,
   cleanupTrackedFiles
 );
+
 
 
 
