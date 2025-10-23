@@ -9,6 +9,7 @@ const imageController = require("../controllers/imageController");
 
 const router = express.Router();
 
+
 // GET routes
 router.get("/operations", (req, res) => {
   res.json({
@@ -84,14 +85,28 @@ router.post(
   upload.array('images', 4),  // Main + up to 3 auxiliary images
   (req, res, next) => {
     if (req.files && req.files.length > 0) {
-      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, next));
+      // register each file for cleanup by calling the middleware returned by trackFileForCleanup
+      let i = 0;
+      const files = req.files;
+      function nextTrack(err) {
+        if (err) return next(err);
+        if (i >= files.length) return next();
+        const maybeMiddleware = trackFileForCleanup(files[i++].path);
+        if (typeof maybeMiddleware === 'function') {
+          maybeMiddleware(req, res, nextTrack);
+        } else {
+          nextTrack();
+        }
+      }
+      return nextTrack();
     } else {
       next();
     }
   },
-  imageController.avatarCreator,
+  imageController.createAvatar,
   cleanupTrackedFiles
 );
+
 
 router.post("/text-to-image", imageController.textToImage, cleanupTrackedFiles);
 
