@@ -37,11 +37,25 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Multer setup
-const upload = multer({
+// ✅ FLEXIBLE UPLOAD METHODS
+const createUpload = () => multer({
   storage,
   fileFilter,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
 });
 
-module.exports = upload;
+// Export flexible methods:
+module.exports = {
+  // ✅ SINGLE IMAGE (for existing routes: background_remover, enhance, etc.)
+  single: (fieldName = 'image') => createUpload().single(fieldName),
+  
+  // ✅ MULTIPLE IMAGES (for avatar-creator, ai-art)
+  array: (fieldName, maxCount = 10) => createUpload().array(fieldName, maxCount),
+  
+  // ✅ BACKWARD COMPATIBLE (your existing usage)
+  // upload.single('image') ✅ WORKS
+  // upload.array('images', 4) ✅ WORKS
+};
+
+// Export original upload for backward compatibility
+module.exports.default = createUpload();
