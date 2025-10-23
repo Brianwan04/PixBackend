@@ -173,7 +173,7 @@ const server = app.listen(PORT, HOST, () => {
     })}`
   );
   console.log(
-    "[Server] Features: Background Remover, AI Enhancer, Magic Eraser, Avatar Creator, Text-to-Image, Upscale, Style Transfer, Mockups"
+    "[Server] Features: Background Remover, AI Enhancer, Magic Eraser, Create Avatar, Text-to-Image, Upscale, Style Transfer, Mockups"
   );
   scheduleCleanup();
 });

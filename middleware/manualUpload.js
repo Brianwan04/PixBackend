@@ -4,9 +4,10 @@ const fs = require('fs').promises;
 
 const UPLOAD_DIR = path.join(__dirname, '../../temp/uploads');
 
-// Initialize directory
+// Initialize upload directory
 (async () => {
   await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  console.log('[ManualUpload] Directory initialized:', UPLOAD_DIR);
 })();
 
 const manualUpload = (req, res, next) => {
@@ -15,48 +16,49 @@ const manualUpload = (req, res, next) => {
     keepExtensions: true,
     maxFileSize: 50 * 1024 * 1024, // 50MB
     maxFieldsSize: 100 * 1024 * 1024, // 100MB
-    multiples: true,
-    // ✅ ACCEPTS ANY FIELD NAME
+    multiples: true, // Allow multiple files
   });
 
   form.parse(req, (err, fields, files) => {
     if (err) {
-      console.error('Formidable error:', err);
-      return res.status(500).json({ error: 'Upload failed' });
+      console.error('[ManualUpload] Formidable error:', err.message);
+      return res.status(500).json({ error: 'Upload failed', message: err.message });
     }
 
-    // Convert to multer-like format
-    req.body = fields;
+    // Convert fields to handle arrays correctly
+    req.body = {};
+    Object.keys(fields).forEach(key => {
+      req.body[key] = Array.isArray(fields[key]) ? fields[key][0] : fields[key];
+    });
+
+    // Convert files to Multer-like format for compatibility
     req.files = [];
-    
-    // Handle multiple files from same fieldname
     Object.values(files).forEach(fileArray => {
       if (Array.isArray(fileArray)) {
         fileArray.forEach(file => {
-          if (file.filepath) {
-            req.files.push({
-              fieldname: file.originalFilename ? 'images' : file.fieldname,
-              originalname: file.originalFilename || file.filepath.split('/').pop(),
-              path: file.filepath,
-              mimetype: file.mimetype || 'image/jpeg',
-              size: file.size
-            });
-          }
+          req.files.push({
+            fieldname: 'images', // Force fieldname to match frontend
+            originalname: file.originalFilename || file.newFilename,
+            path: file.filepath,
+            mimetype: file.mimetype || 'image/jpeg',
+            size: file.size,
+          });
         });
-      } else if (fileArray.filepath) {
+      } else {
         req.files.push({
-          fieldname: fileArray.originalFilename ? 'images' : fileArray.fieldname,
-          originalname: fileArray.originalFilename || fileArray.filepath.split('/').pop(),
+          fieldname: 'images',
+          originalname: fileArray.originalFilename || fileArray.newFilename,
           path: fileArray.filepath,
           mimetype: fileArray.mimetype || 'image/jpeg',
-          size: fileArray.size
+          size: fileArray.size,
         });
       }
     });
 
-    console.log('✅ MANUAL UPLOAD SUCCESS:', req.files.length, 'files');
+    console.log('[ManualUpload] Success:', req.files.length, 'files');
     console.log('Files:', req.files.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
-    
+    console.log('Body:', req.body);
+
     next();
   });
 };

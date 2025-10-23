@@ -100,25 +100,31 @@ router.post(
 // AI-ART (accept up to 2 images: source + optional target file)
 router.post(
   "/create-avatar",
-  upload.array('images', 4), // Accepts up to 4 files under 'images' field
+  manualUpload, // ✅ Replaces Multer
   (req, res, next) => {
+    console.log('🎉 /create-avatar FILES:', req.files?.length || 0);
+    console.log('Files:', req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
     if (req.files && req.files.length > 0) {
-      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, next));
-    } else {
-      next();
+      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, () => {}));
     }
+    next();
   },
   imageController.createAvatar,
   cleanupTrackedFiles
 );
 
-router.post("/ai-art", 
-  manualUpload,  // ✅ NO MULTER = NO ERRORS
+// Route for /ai-art
+router.post(
+  "/ai-art",
+  manualUpload, // ✅ Replaces Multer
   (req, res, next) => {
-    console.log('🎉 /ai-art MANUAL FILES:', req.files?.length || 0);
+    console.log('🎉 /ai-art FILES:', req.files?.length || 0);
+    console.log('Files:', req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, () => {}));
+    }
     next();
   },
-  registerFilesForCleanupIfPresent,
   imageController.aiArt,
   cleanupTrackedFiles
 );
