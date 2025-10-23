@@ -454,150 +454,26 @@ getImageUrlFromPredictionOutput = (output) => {
     }
   };
 
-  // 4. AI Avatar Creator
-  // Replace your existing createAvatar with this method
-  /*
-createAvatar = async (req, res) => {
-  // helper to pick file node from req.file or req.files
-  const pickFileFromRequest = (r) => {
-    if (!r) return null;
-    if (r.file) return r.file;
-    if (r.files) {
-      // Prioritize common keys
-      const keys = ["main_face_image", "image", "file"];
-      for (const k of keys) {
-        if (Array.isArray(r.files[k]) && r.files[k][0]) return r.files[k][0];
-        if (r.files[k] && !Array.isArray(r.files[k]) && r.files[k].path) return r.files[k]; // multer sometimes
-      }
-      // fallback: first array entry
-      const firstKey = Object.keys(r.files)[0];
-      if (firstKey && Array.isArray(r.files[firstKey])) return r.files[firstKey][0];
-      if (firstKey && r.files[firstKey] && r.files[firstKey].path) return r.files[firstKey];
-    }
-    return null;
-  };
-
-  try {
-    // Accept either an uploaded file OR a remote 'main_face_image' URL in req.body
-    const uploadedFile = pickFileFromRequest(req);
-    const remoteFaceUrl = req.body?.main_face_image; // e.g., replicate.delivery url or other image url
-
-    if (!uploadedFile && !remoteFaceUrl) {
-      return res.status(400).json({ error: "No image provided (upload or main_face_image url required)" });
-    }
-
-    // Read style/options from request body, with sensible defaults
-    const userPrompt = (req.body?.prompt || "").trim();
-    const style = req.body?.style || req.body?.style_id || "fantasy";
-    const prompt = userPrompt ? `${userPrompt}` : `Portrait of the provided face — ${style} style. High detail, clean background, sharp facial detail, professional lighting.`;
-    const cfg_scale = Number(req.body?.cfg_scale ?? 1.2);
-    const num_steps = Number(req.body?.num_steps ?? 20);
-    const image_width = Number(req.body?.image_width ?? 768);
-    const image_height = Number(req.body?.image_height ?? 1024);
-    const num_samples = Number(req.body?.num_samples ?? 1);
-    const output_format = req.body?.output_format || "png";
-    const identity_scale = Number(req.body?.identity_scale ?? 0.8);
-    const mix_identities = req.body?.mix_identities === "true" || req.body?.mix_identities === true ? true : false;
-    const negative_prompt = req.body?.negative_prompt || "low quality, bad anatomy, watermark";
-    const generation_mode = req.body?.generation_mode || "fidelity";
-    const output_quality = Number(req.body?.output_quality ?? 90);
-
-    // Determine main_face_image input: try upload to Replicate first, then fallback to data URL if upload fails
-    let mainFaceInput = remoteFaceUrl;
-    if (uploadedFile) {
-      try {
-        console.log(`[Avatar] Uploading local file to Replicate: ${uploadedFile.path}`);
-        mainFaceInput = await this.uploadToReplicate(uploadedFile.path);
-        console.log(`[Avatar] Upload successful: ${mainFaceInput}`);
-      } catch (uploadErr) {
-        // Log the upload error and fall back to inlining the image as base64 data URL
-        console.error("[Avatar] uploadToReplicate failed, falling back to base64 data URL. Error:", uploadErr && (uploadErr.response?.data || uploadErr.message || uploadErr));
-        try {
-          const base64 = await this.imageToBase64(uploadedFile.path);
-          mainFaceInput = `data:${uploadedFile.mimetype};base64,${base64}`;
-          console.log("[Avatar] Using base64 data URL fallback for main_face_image");
-        } catch (readErr) {
-          console.error("[Avatar] Failed to read file for base64 fallback:", readErr);
-          // cleanup and rethrow to send error response
-          await this.cleanupOnError(uploadedFile);
-          return res.status(500).json({ error: "Avatar creation failed", message: "Failed to upload and failed to read file for fallback" });
-        }
-      }
-    }
-
-    // Build input object modeled after the Replicate example
-    const input = {
-      prompt,
-      cfg_scale,
-      num_steps,
-      image_width,
-      image_height,
-      num_samples,
-      output_format,
-      identity_scale,
-      mix_identities,
-      output_quality,
-      generation_mode,
-      main_face_image: mainFaceInput,
-      negative_prompt,
-    };
-
-    // Run the model
-    console.log("[Avatar] Creating prediction with input keys:", Object.keys(input));
-  const prediction = await this.runModel(models.avatarCreator, input);
-
-  // Add this check
-  console.log("[Avatar] Prediction response:", JSON.stringify(prediction)); // Add this for debugging
-
-if (prediction.status !== 'succeeded') {
-  const errMsg = prediction.error || 'Unknown error';
-  console.error("[Avatar] Prediction failed:", errMsg, "Full response:", JSON.stringify(prediction));
-  throw new Error(`Prediction failed: ${errMsg}`);
-}
-
-
-  // Extract image URL robustly from the prediction.output
-  const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
-    console.log("[Avatar] Prediction succeeded, image URL:", imageUrl);
-
-    // Save processed image locally
-    const saved = await this.saveProcessedImage(imageUrl, "avatar");
-    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-
-    // Optionally cleanup uploadedFile (we rely on cleanupTrackedFiles middleware or manual cleanup)
-    // respond with success
-    res.json({
-      success: true,
-      message: "Avatar created",
-      downloadUrl: saved.url,
-      operation: "avatar_creator",
-      prediction_id: prediction?.id || null,
-    });
-  } catch (error) {
-    console.error("[Avatar] Error:", error && (error.response?.data || error.message || error));
-    // cleanup any uploaded file saved by multer
-    const file = (req.file) || (req.files && (req.files.main_face_image?.[0] || req.files.image?.[0] || req.files.file?.[0]));
-    await this.cleanupOnError(file);
-    const msg = error?.response?.data || error?.message || String(error);
-    res.status(500).json({ error: "Avatar creation failed", message: msg });
-  }
-};*/
 createAvatar = async (req, res) => {
   try {
+    // Validate input
     if (!req.files || req.files.length < 1) {
       return res.status(400).json({ error: "No main face image provided" });
     }
 
-    // Main face image is always first file
+    // Log received files and body
+    console.log("[Avatar Creator] Files:", req.files.map(f => ({ path: f.path, originalname: f.originalname })));
+    console.log("[Avatar Creator] Body:", req.body);
+
+    // Main face image (first file)
     const mainImagePath = req.files[0].path;
     console.log(`[Avatar Creator] Main image: ${mainImagePath}`);
 
-    // Get up to 3 auxiliary images
-    const auxiliaryImages = [];
-    for (let i = 1; i < req.files.length && i < 4; i++) {
-      auxiliaryImages.push(req.files[i].path);
-      console.log(`[Avatar Creator] Auxiliary ${i} image: ${req.files[i].path}`);
-    }
+    // Auxiliary images (up to 3)
+    const auxiliaryImages = req.files.slice(1, 4).map((file, i) => {
+      console.log(`[Avatar Creator] Auxiliary ${i + 1} image: ${file.path}`);
+      return file.path;
+    });
 
     // Get parameters
     const prompt = req.body?.prompt || "a portrait of a person";
@@ -610,19 +486,21 @@ createAvatar = async (req, res) => {
     const output_quality = Number(req.body?.output_quality || 80);
     const negative_prompt = req.body?.negative_prompt || "flaws in the eyes, flaws in the face, flaws, lowres, non-HDRi, low quality, worst quality, artifacts noise, text, watermark, glitch, deformed, mutated, ugly, disfigured, hands, low resolution, partially rendered objects, deformed or partially rendered eyes, deformed, deformed eyeballs, cross-eyed, blurry";
 
-    // 1. Upload MAIN image to Replicate
+    // Upload main image to Replicate
     let mainImageUrl;
     try {
-      console.log(`[Avatar Creator] Uploading MAIN image`);
+      console.log("[Avatar Creator] Uploading MAIN image");
       mainImageUrl = await this.uploadToReplicate(mainImagePath);
       console.log(`[Avatar Creator] MAIN uploaded: ${mainImageUrl}`);
     } catch (uploadErr) {
       console.error("[Avatar Creator] MAIN upload failed:", uploadErr.message);
       const base64 = await this.imageToBase64(mainImagePath);
-      mainImageUrl = `data:image/jpeg;base64,${base64}`;
+      const mimeType = mime.getType(req.files[0].originalname) || "image/jpeg";
+      mainImageUrl = `data:${mimeType};base64,${base64}`;
+      console.log("[Avatar Creator] MAIN using base64");
     }
 
-    // 2. Upload auxiliary images (up to 3)
+    // Upload auxiliary images (up to 3)
     const auxImageUrls = [];
     for (let i = 0; i < auxiliaryImages.length; i++) {
       try {
@@ -633,11 +511,13 @@ createAvatar = async (req, res) => {
       } catch (uploadErr) {
         console.error(`[Avatar Creator] Auxiliary ${i + 1} upload failed:`, uploadErr.message);
         const base64 = await this.imageToBase64(auxiliaryImages[i]);
-        auxImageUrls.push(`data:image/jpeg;base64,${base64}`);
+        const mimeType = mime.getType(req.files[i + 1].originalname) || "image/jpeg";
+        auxImageUrls.push(`data:${mimeType};base64,${base64}`);
+        console.log(`[Avatar Creator] Auxiliary ${i + 1} using base64`);
       }
     }
 
-    // 3. Build Replicate input
+    // Build Replicate input
     const input = {
       prompt,
       cfg_scale,
@@ -652,14 +532,11 @@ createAvatar = async (req, res) => {
       generation_mode: "fidelity",
       main_face_image: mainImageUrl,
       negative_prompt,
+      // Add auxiliary images
+      auxiliary_face_image1: auxImageUrls[0] || null,
+      auxiliary_face_image2: auxImageUrls[1] || null,
+      auxiliary_face_image3: auxImageUrls[2] || null,
     };
-
-    // Add auxiliary images
-    for (let i = 0; i < 3; i++) {
-      if (auxImageUrls[i]) {
-        input[`auxiliary_face_image${i + 1}`] = auxImageUrls[i];
-      }
-    }
 
     console.log("[Avatar Creator] Replicate input ready:", {
       prompt,
@@ -667,37 +544,49 @@ createAvatar = async (req, res) => {
       has_aux1: !!auxImageUrls[0],
       has_aux2: !!auxImageUrls[1],
       has_aux3: !!auxImageUrls[2],
-      num_samples
+      num_samples,
     });
 
-    // 4. Run prediction
-    const output = await this.runModel(models.avatarCreator, input);
-    console.log("[Avatar Creator] Generation complete, got", output.length, "images");
+    // Run prediction
+    const prediction = await this.runModel(models.avatarCreator, input);
+    console.log("[Avatar Creator] Prediction status:", prediction.status);
+    console.log("[Avatar Creator] Raw prediction output:", JSON.stringify(prediction.output, null, 2));
 
-    // 5. Save first image (best one)
-    const firstImageUrl = output[0].url();
-    console.log("[Avatar Creator] First result URL:", firstImageUrl);
+    if (prediction.status !== "succeeded") {
+      throw new Error(`Prediction failed: ${prediction.error || "Unknown error"}`);
+    }
 
+    // Extract image URL
+    let firstImageUrl;
+    try {
+      firstImageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+      console.log("[Avatar Creator] First result URL:", firstImageUrl);
+    } catch (extractErr) {
+      console.error("[Avatar Creator] Failed to extract image URL:", extractErr.message);
+      throw new Error(`Failed to extract image URL: ${extractErr.message}`);
+    }
+
+    // Save and return
     const saved = await this.saveProcessedImage(firstImageUrl, "avatar-creator");
-    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+    if (req.filesToCleanup) {
+      req.filesToCleanup.push(saved.path);
+    }
 
     return res.json({
       success: true,
       message: "Avatar created successfully",
       downloadUrl: saved.url,
-      allImages: output.map(img => img.url()), // Return all generated images
       operation: "avatar_creator",
-      prediction_id: output?.prediction_id || null,
+      prediction_id: prediction?.id || null,
     });
-
   } catch (error) {
     console.error("[Avatar Creator] Error:", error.message);
     if (req.files) {
       req.files.forEach(file => this.cleanupOnError(file));
     }
-    return res.status(500).json({ 
-      error: "Avatar creation failed", 
-      message: error.message 
+    return res.status(500).json({
+      error: "Avatar creation failed",
+      message: error.message,
     });
   }
 };
