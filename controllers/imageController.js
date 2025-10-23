@@ -10,26 +10,9 @@ const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
 require("dotenv").config();
 
-const mimeType = mime.lookup(filename) || "image/jpeg";
+//const mimeType = mime.lookup(filename) || "image/jpeg";
 
-/*uploadToReplicate = async (filePath) => {
-  const form = new FormData();
-  form.append("file", fsExtra.createReadStream(filePath));
 
-  const res = await fetchFn("https://api.replicate.com/v1/upload", {
-    method: "POST",
-    headers: { Authorization: `Token ${this.token}` },
-    body: form,
-  });
-
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json.url) {
-    throw new Error("Failed to upload file to Replicate: " + JSON.stringify(json));
-  }
-
-  return json.url; // publicly accessible URL
-};
-*/
 
 let fetchFn;
 if (typeof globalThis.fetch === "function") {
