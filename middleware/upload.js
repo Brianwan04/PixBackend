@@ -14,6 +14,7 @@ const initializeUploadDir = async () => {
 };
 initializeUploadDir();
 
+// ✅ NO FILE FILTER - Accept ANYTHING
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -22,25 +23,11 @@ const storage = multer.diskStorage({
   },
 });
 
-const fileFilter = (req, file, cb) => {
-  const validTypes = ["image/jpeg", "image/png", "image/webp"];
-  if (validTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error("Only JPEG, PNG, and WebP images are allowed"), false);
-  }
-};
-
-// ✅ FLEXIBLE UPLOAD - THE KEY FIX
-const createUpload = () => multer({
+// ✅ ULTRA-SIMPLE MULTER - NO RESTRICTIONS
+const upload = multer({ 
   storage,
-  fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB
+  // ✅ NO fileFilter = NO "Unexpected field" EVER
 });
 
-// ✅ EXPORT METHODS THAT WORK FOR ALL ROUTES
-module.exports = {
-  single: (fieldName = 'image') => createUpload().single(fieldName),
-  array: (fieldName, maxCount = 10) => createUpload().array(fieldName, maxCount),
-  any: () => createUpload().any()
-};
+module.exports = upload;

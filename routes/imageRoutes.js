@@ -1,8 +1,7 @@
 // routes/imageRoutes.js  (Option A - quick fix: use raw upload.single)
 const express = require("express");
 //const upload = require("../middleware/upload"); // keep the existing multer instance export
-const { single, array, any } = require("../middleware/upload");
-const upload = { single, array, any };
+const upload = require("../middleware/upload");
 const {
   trackFileForCleanup,
   cleanupTrackedFiles,
@@ -98,48 +97,25 @@ router.post(
 // Accept either "main_face_image" or "image" (explicit fields)
 // routes/imageRoutes.js
 // AI-ART (accept up to 2 images: source + optional target file)
-router.post(
-  "/ai-art",
-  upload.array('images', 2), // expects form fields named 'images'
+router.post("/create-avatar", 
+  upload.any(),  // ✅ Accepts ANY field name
   (req, res, next) => {
-    console.log('=== /ai-art incoming ===');
-    console.log('content-type:', req.headers['content-type']);
-    console.log('body keys:', Object.keys(req.body || {}));
-    console.log('files:', (req.files || []).map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, path: f.path })));
+    console.log('✅ /create-avatar FILES:', req.files?.length || 0);
+    console.log('Files:', req.files?.map(f => f.fieldname));
     next();
   },
+  registerFilesForCleanupIfPresent,
+  imageController.createAvatar,
+  cleanupTrackedFiles
+);
+
+// ✅ ROUTE 2: AI Art (FIXED)
+router.post("/ai-art", 
+  upload.any(),
   registerFilesForCleanupIfPresent,
   imageController.aiArt,
   cleanupTrackedFiles
 );
-
-// AVATAR CREATOR (accept up to 4 images: main + up to 3 aux)
-/*router.post(
-  "/avatar-creator",
-  upload.array('images', 4), // expects form fields named 'images'
-  (req, res, next) => {
-    console.log('=== /avatar-creator incoming ===');
-    console.log('content-type:', req.headers['content-type']);
-    console.log('body keys:', Object.keys(req.body || {}));
-    console.log('files:', (req.files || []).map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, path: f.path })));
-    next();
-  },
-  registerFilesForCleanupIfPresent,
-  imageController.createAvatar,
-  cleanupTrackedFiles
-);*/
-router.post("/create-avatar", 
-  upload.any(),  // ✅ WORKS WITH 'images' field
-  (req, res, next) => {
-    console.log('✅ /create-avatar FILES:', req.files?.length);
-    next();
-  },
-  registerFilesForCleanupIfPresent,
-  imageController.createAvatar,
-  cleanupTrackedFiles
-);
-
-
 
 router.post("/text-to-image", imageController.textToImage, cleanupTrackedFiles);
 
