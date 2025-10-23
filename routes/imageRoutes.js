@@ -98,13 +98,16 @@ router.post(
 // Accept either "main_face_image" or "image" (explicit fields)
 // routes/imageRoutes.js
 // AI-ART (accept up to 2 images: source + optional target file)
-router.post("/create-avatar", 
-  manualUpload,  // ✅ NO MULTER = NO ERRORS
+router.post(
+  "/create-avatar",
+  upload.array('images', 4), // Accepts up to 4 files under 'images' field
   (req, res, next) => {
-    console.log('🎉 /create-avatar MANUAL FILES:', req.files?.length || 0);
-    next();
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, next));
+    } else {
+      next();
+    }
   },
-  registerFilesForCleanupIfPresent,
   imageController.createAvatar,
   cleanupTrackedFiles
 );
