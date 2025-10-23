@@ -4,10 +4,13 @@ const fs = require("fs").promises;
 const path = require("path");
 const FormData = require("form-data");
 const fsExtra = require("fs");
-const mime = require("mime"); // Explicit import
+//const mime = require("mime"); // Explicit import
+const mime = require("mime-types");
 const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
 require("dotenv").config();
+
+const mimeType = mime.lookup(filename) || "image/jpeg";
 
 /*uploadToReplicate = async (filePath) => {
   const form = new FormData();
