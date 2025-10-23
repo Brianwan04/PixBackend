@@ -53,10 +53,13 @@ router.post(
 
 router.post(
   "/ai-art",
-  upload.single("image"),
+  upload.array('images', 2),  // Accept up to 2 images
   (req, res, next) => {
-    if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
-    else next();
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, next));
+    } else {
+      next();
+    }
   },
   imageController.aiArt,
   cleanupTrackedFiles
@@ -77,13 +80,16 @@ router.post(
 // Accept either "main_face_image" or "image" (explicit fields)
 // routes/imageRoutes.js
 router.post(
-  "/create-avatar",
-  upload.single("image"), // <- change from main_face_image to image
+  "/avatar-creator",
+  upload.array('images', 4),  // Main + up to 3 auxiliary images
   (req, res, next) => {
-    if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
-    else next();
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, next));
+    } else {
+      next();
+    }
   },
-  imageController.createAvatar,
+  imageController.avatarCreator,
   cleanupTrackedFiles
 );
 

@@ -584,89 +584,121 @@ if (prediction.status !== 'succeeded') {
 };*/
 createAvatar = async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No image provided" });
+    if (!req.files || req.files.length < 1) {
+      return res.status(400).json({ error: "No main face image provided" });
     }
 
-    const prompt = req.body?.prompt || "portrait, watercolor style, dramatic lighting";
+    // Main face image is always first file
+    const mainImagePath = req.files[0].path;
+    console.log(`[Avatar Creator] Main image: ${mainImagePath}`);
+
+    // Get up to 3 auxiliary images
+    const auxiliaryImages = [];
+    for (let i = 1; i < req.files.length && i < 4; i++) {
+      auxiliaryImages.push(req.files[i].path);
+      console.log(`[Avatar Creator] Auxiliary ${i} image: ${req.files[i].path}`);
+    }
+
+    // Get parameters
+    const prompt = req.body?.prompt || "a portrait of a person";
     const cfg_scale = Number(req.body?.cfg_scale || 1.2);
     const num_steps = Number(req.body?.num_steps || 4);
+    const num_samples = Number(req.body?.num_samples || 4);
     const image_width = Number(req.body?.image_width || 768);
     const image_height = Number(req.body?.image_height || 1024);
-    const num_samples = Number(req.body?.num_samples || 4);
-    const output_format = req.body?.output_format || "webp";
     const identity_scale = Number(req.body?.identity_scale || 0.8);
-    const mix_identities = req.body?.mix_identities === "true" || false;
     const output_quality = Number(req.body?.output_quality || 80);
-    const generation_mode = req.body?.generation_mode || "fidelity";
     const negative_prompt = req.body?.negative_prompt || "flaws in the eyes, flaws in the face, flaws, lowres, non-HDRi, low quality, worst quality, artifacts noise, text, watermark, glitch, deformed, mutated, ugly, disfigured, hands, low resolution, partially rendered objects, deformed or partially rendered eyes, deformed, deformed eyeballs, cross-eyed, blurry";
 
-    let imageInput = null;
+    // 1. Upload MAIN image to Replicate
+    let mainImageUrl;
     try {
-      console.log(`[Avatar] Uploading source image: ${req.file.path}`);
-      imageInput = await this.uploadToReplicate(req.file.path);
-      console.log(`[Avatar] Uploaded URL: ${imageInput}`);
+      console.log(`[Avatar Creator] Uploading MAIN image`);
+      mainImageUrl = await this.uploadToReplicate(mainImagePath);
+      console.log(`[Avatar Creator] MAIN uploaded: ${mainImageUrl}`);
     } catch (uploadErr) {
-      console.error("[Avatar] uploadToReplicate failed:", uploadErr.message);
-      const base64 = await this.imageToBase64(req.file.path);
-      const mimeType = req.file.mimetype || mime.getType(req.file.originalname) || "image/jpeg";
-      imageInput = `data:${mimeType};base64,${base64}`;
-      console.log("[Avatar] Using base64 data URL");
+      console.error("[Avatar Creator] MAIN upload failed:", uploadErr.message);
+      const base64 = await this.imageToBase64(mainImagePath);
+      mainImageUrl = `data:image/jpeg;base64,${base64}`;
     }
 
+    // 2. Upload auxiliary images (up to 3)
+    const auxImageUrls = [];
+    for (let i = 0; i < auxiliaryImages.length; i++) {
+      try {
+        console.log(`[Avatar Creator] Uploading auxiliary image ${i + 1}`);
+        const url = await this.uploadToReplicate(auxiliaryImages[i]);
+        auxImageUrls.push(url);
+        console.log(`[Avatar Creator] Auxiliary ${i + 1} uploaded: ${url}`);
+      } catch (uploadErr) {
+        console.error(`[Avatar Creator] Auxiliary ${i + 1} upload failed:`, uploadErr.message);
+        const base64 = await this.imageToBase64(auxiliaryImages[i]);
+        auxImageUrls.push(`data:image/jpeg;base64,${base64}`);
+      }
+    }
+
+    // 3. Build Replicate input
     const input = {
       prompt,
       cfg_scale,
       num_steps,
       image_width,
-      image_height,
       num_samples,
-      output_format,
+      image_height,
+      output_format: "webp",
       identity_scale,
-      mix_identities,
+      mix_identities: false,
       output_quality,
-      generation_mode,
-      main_face_image: imageInput,
+      generation_mode: "fidelity",
+      main_face_image: mainImageUrl,
       negative_prompt,
     };
 
-    console.log("[Avatar] Creating prediction with input:", Object.keys(input));
-    const prediction = await this.runModel(models.avatarCreator, input);
-    console.log("[Avatar] Prediction response:", JSON.stringify(prediction, null, 2));
-
-    if (prediction.status !== "succeeded") {
-      console.error("[Avatar] Prediction failed:", prediction.error || "Unknown error");
-      throw new Error(`Prediction failed: ${prediction.error || "Unknown error"}`);
-    }
-
-    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
-    console.log("[Avatar] Extracted image URL:", imageUrl);
-
-    try {
-      const verifyResponse = await axios.head(imageUrl, { timeout: 10000 });
-      console.log("[Avatar] Image URL verification status:", verifyResponse.status, "Content-Type:", verifyResponse.headers["content-type"]);
-      if (verifyResponse.status >= 400) {
-        throw new Error(`Image URL inaccessible: ${verifyResponse.status}`);
+    // Add auxiliary images
+    for (let i = 0; i < 3; i++) {
+      if (auxImageUrls[i]) {
+        input[`auxiliary_face_image${i + 1}`] = auxImageUrls[i];
       }
-    } catch (verifyErr) {
-      console.error("[Avatar] Image URL verification failed:", verifyErr.message);
-      throw verifyErr;
     }
 
-    const saved = await this.saveProcessedImage(imageUrl, "avatar");
+    console.log("[Avatar Creator] Replicate input ready:", {
+      prompt,
+      main_face_image: mainImageUrl.substring(0, 80) + "...",
+      has_aux1: !!auxImageUrls[0],
+      has_aux2: !!auxImageUrls[1],
+      has_aux3: !!auxImageUrls[2],
+      num_samples
+    });
+
+    // 4. Run prediction
+    const output = await this.runModel(models.avatarCreator, input);
+    console.log("[Avatar Creator] Generation complete, got", output.length, "images");
+
+    // 5. Save first image (best one)
+    const firstImageUrl = output[0].url();
+    console.log("[Avatar Creator] First result URL:", firstImageUrl);
+
+    const saved = await this.saveProcessedImage(firstImageUrl, "avatar-creator");
     if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
 
     return res.json({
       success: true,
-      message: "Avatar created",
+      message: "Avatar created successfully",
       downloadUrl: saved.url,
+      allImages: output.map(img => img.url()), // Return all generated images
       operation: "avatar_creator",
-      prediction_id: prediction?.id || null,
+      prediction_id: output?.prediction_id || null,
     });
+
   } catch (error) {
-    console.error("[Avatar] Error:", error.message, error);
-    if (req.file) await this.cleanupOnError(req.file);
-    return res.status(500).json({ error: "Avatar creation failed", message: error.message });
+    console.error("[Avatar Creator] Error:", error.message);
+    if (req.files) {
+      req.files.forEach(file => this.cleanupOnError(file));
+    }
+    return res.status(500).json({ 
+      error: "Avatar creation failed", 
+      message: error.message 
+    });
   }
 };
 
@@ -797,200 +829,29 @@ createAvatar = async (req, res) => {
         .json({ error: "Mockup creation failed", message: (error.response?.detail || error.message) });
     }
   };
-/*
-  aiArt = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No source image provided" });
-    }
-    const imageToBecomeUrl = req.body?.image_to_become;
-    if (!imageToBecomeUrl) {
-      return res.status(400).json({ error: "No image_to_become URL provided" });
-    }
-
-    const prompt = req.body?.prompt || "a person";
-    const prompt_strength = Number(req.body?.prompt_strength || 2);
-    const number_of_images = Number(req.body?.number_of_images || 1);
-    const denoising_strength = Number(req.body?.denoising_strength || 1);
-    const instant_id_strength = Number(req.body?.instant_id_strength || 1);
-    const image_to_become_noise = Number(req.body?.image_to_become_noise || 0.3);
-    const control_depth_strength = Number(req.body?.control_depth_strength || 0.8);
-    const image_to_become_strength = Number(req.body?.image_to_become_strength || 0.75);
-    const negative_prompt = req.body?.negative_prompt || "";
-    const num_steps = Number(req.body?.num_steps || 30);
-    const cfg_scale = Number(req.body?.cfg_scale || 1.5);
-
-    let imageInput = null;
-    let usedUploadedUrl = false;
-
-    // Upload to Replicate (or other file host)
-    try {
-      console.log(`[AI Art] Uploading source image to Replicate: ${req.file.path}`);
-      const uploadedUrl = await this.uploadToReplicate(req.file.path);
-      console.log(`[AI Art] Source image upload returned URL: ${uploadedUrl}`);
-
-      // Quick checks: is it data URI, replicate file URL, has extension?
-      if (typeof uploadedUrl === "string" && uploadedUrl.startsWith("data:")) {
-        imageInput = uploadedUrl;
-        usedUploadedUrl = false;
-        console.log("[AI Art] Upload returned data URI — using it directly.");
-      } else {
-        const looksLikeReplicateFile = typeof uploadedUrl === "string" && /\/v1\/files\//.test(uploadedUrl);
-        const hasExt = typeof uploadedUrl === "string" && /\.[a-zA-Z0-9]{2,5}($|\?)/.test(uploadedUrl);
-
-        // Try to fetch the uploaded URL to inspect headers & bytes
-        let fetchedBuffer = null;
-        let fetchedContentType = null;
-        let fetchedStatus = null;
-        try {
-          const fetched = await axios.get(uploadedUrl, {
-            method: "GET",
-            responseType: "arraybuffer",
-            timeout: 20000,
-            validateStatus: null,
-          });
-          fetchedStatus = fetched.status;
-          fetchedContentType = fetched.headers && (fetched.headers["content-type"] || fetched.headers["Content-Type"]);
-          console.log("[AI Art] fetched uploadedUrl status:", fetchedStatus, "content-type:", fetchedContentType);
-          if (fetchedStatus >= 200 && fetchedStatus < 300) {
-            fetchedBuffer = Buffer.from(fetched.data, "binary");
-          } else {
-            console.warn("[AI Art] fetching uploaded URL returned non-2xx status:", fetchedStatus);
-          }
-        } catch (fetchErr) {
-          console.warn("[AI Art] Error fetching uploadedUrl for inspection (will fallback to base64):", fetchErr && (fetchErr.message || fetchErr));
-        }
-
-        // Decide whether to use URL directly or convert to inline base64 data URI
-        const contentTypeLooksImage = fetchedContentType && /^image\//i.test(fetchedContentType);
-        if (!hasExt || looksLikeReplicateFile || !contentTypeLooksImage) {
-          // Convert to data URI (prefer fetched bytes, else local file)
-          if (fetchedBuffer) {
-            const contentType = fetchedContentType || req.file.mimetype || "image/jpeg";
-            const b64 = fetchedBuffer.toString("base64");
-            imageInput = `data:${contentType};base64,${b64}`;
-            console.log("[AI Art] Converted fetched uploadedUrl to data URI (content-type):", contentType, "b64 bytes:", b64.length);
-          } else {
-            // Fallback: read local file and create base64 data URI
-            console.log("[AI Art] No fetched buffer — creating data URI from local file fallback");
-            const localBase64 = await this.imageToBase64(req.file.path);
-            const mimeTypeFallback = req.file.mimetype || "image/jpeg";
-            imageInput = `data:${mimeTypeFallback};base64,${localBase64}`;
-            console.log("[AI Art] Created data URI from local file fallback (length):", localBase64.length);
-          }
-          usedUploadedUrl = false;
-        } else {
-          // Safe to use uploaded URL directly
-          imageInput = uploadedUrl;
-          usedUploadedUrl = true;
-          console.log("[AI Art] Uploaded URL looks safe — using URL directly.");
-        }
-      }
-    } catch (uploadErr) {
-      // Upload failed — fallback to reading local file as data URI
-      console.error("[AI Art] uploadToReplicate failed — using local base64 fallback:", uploadErr && (uploadErr.response?.data || uploadErr.message || uploadErr));
-      const base64 = await this.imageToBase64(req.file.path);
-      const mimeType = req.file.mimetype || (require("mime")?.getType(req.file.originalname) || "image/jpeg");
-      imageInput = `data:${mimeType};base64,${base64}`;
-      usedUploadedUrl = false;
-      console.log("[AI Art] Using base64 data URL for source image (upload failed)");
-    }
-
-    // Build input for the model
-    const input = {
-      image: imageInput,
-      image_to_become: imageToBecomeUrl,
-      prompt,
-      prompt_strength,
-      number_of_images,
-      denoising_strength,
-      instant_id_strength,
-      image_to_become_noise,
-      control_depth_strength,
-      image_to_become_strength,
-      negative_prompt,
-      num_steps,
-      cfg_scale,
-    };
-
-    console.log("[AI Art] Creating prediction with input keys:", Object.keys(input), "usedUploadedUrl:", usedUploadedUrl);
-    const prediction = await this.runModel(models.aiArt, input);
-
-    console.log("[AI Art] Prediction response:", JSON.stringify(prediction));
-
-    if (prediction.status !== "succeeded") {
-      const errMsg = prediction.error || "Unknown error";
-      console.error("[AI Art] Prediction failed:", errMsg, "full response:", JSON.stringify(prediction));
-
-      // If it's likely a file-type issue and we didn't already use inline base64, retry forcing local base64
-      if ((!imageInput || !String(imageInput).startsWith("data:")) && (String(errMsg).toLowerCase().includes("unsupported file") || String(errMsg).toLowerCase().includes("unsupported file type"))) {
-        console.log("[AI Art] Detected unsupported file error — retrying with inline base64 from local file.");
-        try {
-          const base64 = await this.imageToBase64(req.file.path);
-          const mimeType = req.file.mimetype || (require("mime")?.getType(req.file.originalname) || "image/jpeg");
-          const fallbackImage = `data:${mimeType};base64,${base64}`;
-          const retryInput = { ...input, image: fallbackImage };
-          const retryPrediction = await this.runModel(models.aiArt, retryInput);
-
-          if (retryPrediction.status !== "succeeded") {
-            console.error("[AI Art] Retry prediction failed:", JSON.stringify(retryPrediction));
-            throw new Error(retryPrediction.error || "Retry prediction failed");
-          }
-
-          const imageUrlRetry = this.getImageUrlFromPredictionOutput(retryPrediction.output);
-          const savedRetry = await this.saveProcessedImage(imageUrlRetry, "ai-art");
-          if (req.filesToCleanup) req.filesToCleanup.push(savedRetry.path);
-          return res.json({
-            success: true,
-            message: "AI Art generated (retry)",
-            downloadUrl: savedRetry.url,
-            operation: "ai_art",
-            prediction_id: retryPrediction?.id || null,
-          });
-        } catch (retryErr) {
-          console.error("[AI Art] Retry also failed:", retryErr && (retryErr.response?.data || retryErr.message || retryErr));
-          // allow outer catch to handle response
-          throw retryErr;
-        }
-      }
-
-      // Not a retryable type error or retry exhausted
-      throw new Error(`Prediction failed: ${errMsg}`);
-    }
-
-    // Successful prediction
-    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
-    console.log("[AI Art] Prediction succeeded, image URL:", imageUrl);
-
-    const saved = await this.saveProcessedImage(imageUrl, "ai-art");
-    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-
-    return res.json({
-      success: true,
-      message: "AI Art generated",
-      downloadUrl: saved.url,
-      operation: "ai_art",
-      prediction_id: prediction?.id || null,
-    });
-  } catch (error) {
-    console.error("[AI Art] Error:", error && (error.response?.data || error.message || error));
-    // cleanup uploaded/multer file
-    const file = req.file;
-    if (file) await this.cleanupOnError(file);
-    const msg = error?.response?.data || error?.message || String(error);
-    return res.status(500).json({ error: "AI Art generation failed", message: msg });
-  }
-};*/
 aiArt = async (req, res) => {
   try {
-    if (!req.file) {
+    if (!req.files || req.files.length < 1) {
       return res.status(400).json({ error: "No source image provided" });
     }
-    const imageToBecomeUrl = req.body?.image_to_become;
-    if (!imageToBecomeUrl) {
-      return res.status(400).json({ error: "No image_to_become URL provided" });
+
+    // Source image is always first file
+    const sourceImagePath = req.files[0].path;
+    console.log(`[AI Art] Source image: ${sourceImagePath}`);
+
+    // Get target image source
+    let targetImageUrl = req.body?.image_to_become_url; // Remote URL fallback
+    let targetImagePath = null;
+
+    if (req.files.length === 2) {
+      // Local target image uploaded as second file
+      targetImagePath = req.files[1].path;
+      console.log(`[AI Art] Local target image: ${targetImagePath}`);
+    } else if (!targetImageUrl) {
+      return res.status(400).json({ error: "No target image provided (upload second image or provide image_to_become_url)" });
     }
 
+    // Get parameters
     const prompt = req.body?.prompt || "a person";
     const prompt_strength = Number(req.body?.prompt_strength || 2);
     const number_of_images = Number(req.body?.number_of_images || 1);
@@ -1003,22 +864,42 @@ aiArt = async (req, res) => {
     const num_steps = Number(req.body?.num_steps || 30);
     const cfg_scale = Number(req.body?.cfg_scale || 1.5);
 
-    let imageInput = null;
+    // 1. Upload SOURCE image to Replicate
+    let sourceImageUrl;
     try {
-      console.log(`[AI Art] Uploading source image: ${req.file.path}`);
-      imageInput = await this.uploadToReplicate(req.file.path);
-      console.log(`[AI Art] Uploaded URL: ${imageInput}`);
+      console.log(`[AI Art] Uploading SOURCE image to Replicate`);
+      sourceImageUrl = await this.uploadToReplicate(sourceImagePath);
+      console.log(`[AI Art] SOURCE uploaded: ${sourceImageUrl}`);
     } catch (uploadErr) {
-      console.error("[AI Art] uploadToReplicate failed:", uploadErr.message);
-      const base64 = await this.imageToBase64(req.file.path);
-      const mimeType = req.file.mimetype || mime.getType(req.file.originalname) || "image/jpeg";
-      imageInput = `data:${mimeType};base64,${base64}`;
-      console.log("[AI Art] Using base64 data URL");
+      console.error("[AI Art] SOURCE upload failed:", uploadErr.message);
+      const base64 = await this.imageToBase64(sourceImagePath);
+      const mimeType = req.files[0].mimetype || "image/jpeg";
+      sourceImageUrl = `data:${mimeType};base64,${base64}`;
+      console.log("[AI Art] SOURCE using base64");
     }
 
+    // 2. Handle TARGET image
+    if (targetImagePath) {
+      // Local target - upload to Replicate
+      try {
+        console.log(`[AI Art] Uploading TARGET image to Replicate`);
+        targetImageUrl = await this.uploadToReplicate(targetImagePath);
+        console.log(`[AI Art] TARGET uploaded: ${targetImageUrl}`);
+      } catch (uploadErr) {
+        console.error("[AI Art] TARGET upload failed:", uploadErr.message);
+        const base64 = await this.imageToBase64(targetImagePath);
+        const mimeType = req.files[1].mimetype || "image/jpeg";
+        targetImageUrl = `data:${mimeType};base64,${base64}`;
+        console.log("[AI Art] TARGET using base64");
+      }
+    } else {
+      console.log(`[AI Art] Using remote TARGET URL: ${targetImageUrl}`);
+    }
+
+    // 3. Build Replicate input
     const input = {
-      image: imageInput,
-      image_to_become: imageToBecomeUrl,
+      image: sourceImageUrl,           // Source face image
+      image_to_become: targetImageUrl, // Target style image
       prompt,
       prompt_strength,
       number_of_images,
@@ -1032,46 +913,49 @@ aiArt = async (req, res) => {
       cfg_scale,
     };
 
-    console.log("[AI Art] Creating prediction with input:", Object.keys(input));
+    console.log("[AI Art] Replicate input ready:", {
+      image: sourceImageUrl.substring(0, 80) + "...",
+      image_to_become: targetImageUrl.substring(0, 80) + "...",
+      prompt
+    });
+
+    // 4. Run prediction
     const prediction = await this.runModel(models.aiArt, input);
-    console.log("[AI Art] Prediction response:", JSON.stringify(prediction, null, 2));
+    console.log("[AI Art] Prediction status:", prediction.status);
 
     if (prediction.status !== "succeeded") {
       console.error("[AI Art] Prediction failed:", prediction.error || "Unknown error");
       throw new Error(`Prediction failed: ${prediction.error || "Unknown error"}`);
     }
 
+    // 5. Extract result
     const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
-    console.log("[AI Art] Extracted image URL:", imageUrl);
+    console.log("[AI Art] Result URL:", imageUrl);
 
-    // Verify image URL
-    try {
-      const verifyResponse = await axios.head(imageUrl, { timeout: 10000 });
-      console.log("[AI Art] Image URL verification status:", verifyResponse.status, "Content-Type:", verifyResponse.headers["content-type"]);
-      if (verifyResponse.status >= 400) {
-        throw new Error(`Image URL inaccessible: ${verifyResponse.status}`);
-      }
-    } catch (verifyErr) {
-      console.error("[AI Art] Image URL verification failed:", verifyErr.message);
-      throw verifyErr;
-    }
-
+    // 6. Save and return
     const saved = await this.saveProcessedImage(imageUrl, "ai-art");
     if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
 
     return res.json({
       success: true,
-      message: "AI Art generated",
+      message: "AI Art generated successfully",
       downloadUrl: saved.url,
       operation: "ai_art",
       prediction_id: prediction?.id || null,
     });
+
   } catch (error) {
-    console.error("[AI Art] Error:", error.message, error);
-    if (req.file) await this.cleanupOnError(req.file);
-    return res.status(500).json({ error: "AI Art generation failed", message: error.message });
+    console.error("[AI Art] Error:", error.message);
+    if (req.files) {
+      req.files.forEach(file => this.cleanupOnError(file));
+    }
+    return res.status(500).json({ 
+      error: "AI Art generation failed", 
+      message: error.message 
+    });
   }
 };
+
   // Get available styles
   getStyles = async (req, res) => {
     try {
