@@ -2,6 +2,7 @@
 const express = require("express");
 //const upload = require("../middleware/upload"); // keep the existing multer instance export
 const upload = require("../middleware/upload");
+const { manualUpload } = require("../middleware/manualUpload");
 const {
   trackFileForCleanup,
   cleanupTrackedFiles,
@@ -98,10 +99,9 @@ router.post(
 // routes/imageRoutes.js
 // AI-ART (accept up to 2 images: source + optional target file)
 router.post("/create-avatar", 
-  upload.any(),  // ✅ Accepts ANY field name including 'images'
+  manualUpload,  // ✅ NO MULTER = NO ERRORS
   (req, res, next) => {
-    console.log('✅ /create-avatar FILES RECEIVED:', req.files?.length || 0);
-    console.log('Field names:', req.files?.map(f => f.fieldname));
+    console.log('🎉 /create-avatar MANUAL FILES:', req.files?.length || 0);
     next();
   },
   registerFilesForCleanupIfPresent,
@@ -110,20 +110,13 @@ router.post("/create-avatar",
 );
 
 router.post("/ai-art", 
-  upload.any(),  // ✅ Accepts ANY field name including 'images'
+  manualUpload,  // ✅ NO MULTER = NO ERRORS
   (req, res, next) => {
-    console.log('✅ /ai-art FILES RECEIVED:', req.files?.length || 0);
+    console.log('🎉 /ai-art MANUAL FILES:', req.files?.length || 0);
     next();
   },
   registerFilesForCleanupIfPresent,
   imageController.aiArt,
-  cleanupTrackedFiles
-);
-
-router.post("/avatar-creator", 
-  upload.any(),
-  registerFilesForCleanupIfPresent,
-  imageController.createAvatar,
   cleanupTrackedFiles
 );
 
