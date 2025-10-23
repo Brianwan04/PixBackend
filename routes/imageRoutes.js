@@ -7,6 +7,34 @@ const {
 } = require("../utils/fileCleanup");
 const imageController = require("../controllers/imageController");
 
+// ---- add this helper right after your imports / router creation ----
+function registerFilesForCleanupIfPresent(req, res, next) {
+  try {
+    if (req.files && Array.isArray(req.files) && req.files.length) {
+      let i = 0;
+      function nextTrack(err) {
+        if (err) return next(err);
+        if (i >= req.files.length) return next();
+        const maybeMiddleware = trackFileForCleanup(req.files[i++].path);
+        if (typeof maybeMiddleware === 'function') {
+          // call the middleware returned by trackFileForCleanup
+          maybeMiddleware(req, res, nextTrack);
+        } else {
+          // if it didn't return middleware, continue to next file
+          nextTrack();
+        }
+      }
+      return nextTrack();
+    }
+  } catch (e) {
+    console.error('registerFilesForCleanupIfPresent error', e);
+    // don't block request on cleanup helper errors
+  }
+  return next();
+}
+// -------------------------------------------------------------------
+
+
 const router = express.Router();
 
 
@@ -52,19 +80,6 @@ router.post(
   cleanupTrackedFiles
 );
 
-router.post(
-  "/ai-art",
-  upload.array('images', 2),  // Accept up to 2 images
-  (req, res, next) => {
-    if (req.files && req.files.length > 0) {
-      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, next));
-    } else {
-      next();
-    }
-  },
-  imageController.aiArt,
-  cleanupTrackedFiles
-);
 
 router.post(
   "/magic-eraser",
@@ -81,31 +96,35 @@ router.post(
 // Accept either "main_face_image" or "image" (explicit fields)
 // routes/imageRoutes.js
 router.post(
-  "/avatar-creator",
-  upload.array('images', 4),  // Main + up to 3 auxiliary images
+  "/ai-art",
+  upload.any(), // temporary for debugging
   (req, res, next) => {
-    if (req.files && req.files.length > 0) {
-      // register each file for cleanup by calling the middleware returned by trackFileForCleanup
-      let i = 0;
-      const files = req.files;
-      function nextTrack(err) {
-        if (err) return next(err);
-        if (i >= files.length) return next();
-        const maybeMiddleware = trackFileForCleanup(files[i++].path);
-        if (typeof maybeMiddleware === 'function') {
-          maybeMiddleware(req, res, nextTrack);
-        } else {
-          nextTrack();
-        }
-      }
-      return nextTrack();
-    } else {
-      next();
-    }
+    console.log('=== /ai-art incoming ===');
+    console.log('content-type:', req.headers['content-type']);
+    console.log('body keys:', Object.keys(req.body || {}));
+    console.log('files:', (req.files || []).map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, path: f.path })));
+    next();
   },
+  registerFilesForCleanupIfPresent,
+  imageController.aiArt,
+  cleanupTrackedFiles
+);
+
+router.post(
+  "/avatar-creator",
+  upload.any(), // temporary for debugging
+  (req, res, next) => {
+    console.log('=== /avatar-creator incoming ===');
+    console.log('content-type:', req.headers['content-type']);
+    console.log('body keys:', Object.keys(req.body || {}));
+    console.log('files:', (req.files || []).map(f => ({ fieldname: f.fieldname, originalname: f.originalname, mimetype: f.mimetype, path: f.path })));
+    next();
+  },
+  registerFilesForCleanupIfPresent,
   imageController.createAvatar,
   cleanupTrackedFiles
 );
+
 
 
 router.post("/text-to-image", imageController.textToImage, cleanupTrackedFiles);
