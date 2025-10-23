@@ -32,8 +32,11 @@ class ImageController {
 
   uploadToReplicate = async (filePath) => {
     const form = new FormData();
+    //const filename = path.basename(filePath);
+    //const mimeType = mime.getType(filename) || "image/jpeg"; // Use mime directly
     const filename = path.basename(filePath);
-    const mimeType = mime.getType(filename) || "image/jpeg"; // Use mime directly
+    const mimeType = mime.lookup(filename) || "image/jpeg";
+
     form.append("file", fsExtra.createReadStream(filePath), filename);
     form.append("filename", filename);
     form.append("type", mimeType);
@@ -480,9 +483,14 @@ createAvatar = async (req, res) => {
       console.log(`[Avatar Creator] MAIN uploaded: ${mainImageUrl}`);
     } catch (uploadErr) {
       console.error("[Avatar Creator] MAIN upload failed:", uploadErr.message);
+      // in createAvatar catch fallback
       const base64 = await this.imageToBase64(mainImagePath);
-      const mimeType = mime.getType(req.files[0].originalname) || "image/jpeg";
+      const mimeType =
+        req.files[0]?.mimetype ||
+        mime.lookup(req.files[0]?.originalname) ||
+        "image/jpeg";
       mainImageUrl = `data:${mimeType};base64,${base64}`;
+
       console.log("[Avatar Creator] MAIN using base64");
     }
 
@@ -495,10 +503,18 @@ createAvatar = async (req, res) => {
         auxImageUrls.push(url);
         console.log(`[Avatar Creator] Auxiliary ${i + 1} uploaded: ${url}`);
       } catch (uploadErr) {
-        console.error(`[Avatar Creator] Auxiliary ${i + 1} upload failed:`, uploadErr.message);
+        console.error(
+          `[Avatar Creator] Auxiliary ${i + 1} upload failed:`,
+          uploadErr.message
+        );
+        // in aux fallback loop
         const base64 = await this.imageToBase64(auxiliaryImages[i]);
-        const mimeType = mime.getType(req.files[i + 1].originalname) || "image/jpeg";
+        const mimeType =
+          req.files[i + 1]?.mimetype ||
+          mime.lookup(req.files[i + 1]?.originalname) ||
+          "image/jpeg";
         auxImageUrls.push(`data:${mimeType};base64,${base64}`);
+
         console.log(`[Avatar Creator] Auxiliary ${i + 1} using base64`);
       }
     }
@@ -748,8 +764,12 @@ aiArt = async (req, res) => {
     } catch (uploadErr) {
       console.error("[AI Art] SOURCE upload failed:", uploadErr.message);
       const base64 = await this.imageToBase64(sourceImagePath);
-      const mimeType = req.files[0].mimetype || "image/jpeg";
+      const mimeType =
+        req.files[0]?.mimetype ||
+        mime.lookup(req.files[0]?.originalname) ||
+        "image/jpeg";
       sourceImageUrl = `data:${mimeType};base64,${base64}`;
+
       console.log("[AI Art] SOURCE using base64");
     }
 
