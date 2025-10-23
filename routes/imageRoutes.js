@@ -1,6 +1,8 @@
 // routes/imageRoutes.js  (Option A - quick fix: use raw upload.single)
 const express = require("express");
-const upload = require("../middleware/upload"); // keep the existing multer instance export
+//const upload = require("../middleware/upload"); // keep the existing multer instance export
+const { single, array, any } = require("../middleware/upload");
+const upload = { single, array, any };
 const {
   trackFileForCleanup,
   cleanupTrackedFiles,
@@ -112,7 +114,7 @@ router.post(
 );
 
 // AVATAR CREATOR (accept up to 4 images: main + up to 3 aux)
-router.post(
+/*router.post(
   "/avatar-creator",
   upload.array('images', 4), // expects form fields named 'images'
   (req, res, next) => {
@@ -125,8 +127,17 @@ router.post(
   registerFilesForCleanupIfPresent,
   imageController.createAvatar,
   cleanupTrackedFiles
+);*/
+router.post("/create-avatar", 
+  upload.any(),  // ✅ WORKS WITH 'images' field
+  (req, res, next) => {
+    console.log('✅ /create-avatar FILES:', req.files?.length);
+    next();
+  },
+  registerFilesForCleanupIfPresent,
+  imageController.createAvatar,
+  cleanupTrackedFiles
 );
-
 
 
 
