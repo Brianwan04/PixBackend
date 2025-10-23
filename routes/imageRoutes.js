@@ -100,7 +100,7 @@ router.post(
 // AI-ART (accept up to 2 images: source + optional target file)
 router.post(
   "/create-avatar",
-  upload.array("images", 4), // Matches frontend's 'images' field, allows up to 4 files
+  manualUpload,
   (req, res, next) => {
     console.log("[/create-avatar] Files received:", req.files?.length || 0);
     console.log("[/create-avatar] File details:", req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
@@ -114,10 +114,10 @@ router.post(
   cleanupTrackedFiles
 );
 
-// Route for /ai-art (also updated to handle 'images')
+// Route for /ai-art
 router.post(
   "/ai-art",
-  upload.array("images", 4), // Matches frontend's 'images' field
+  manualUpload,
   (req, res, next) => {
     console.log("[/ai-art] Files received:", req.files?.length || 0);
     console.log("[/ai-art] File details:", req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
