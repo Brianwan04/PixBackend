@@ -31,50 +31,52 @@ class ImageController {
   }
 
   uploadToReplicate = async (filePath) => {
-    const form = new FormData();
-    //const filename = path.basename(filePath);
-    //const mimeType = mime.getType(filename) || "image/jpeg"; // Use mime directly
-    const filename = path.basename(filePath);
-    const mimeType = mime.lookup(filename) || "image/jpeg";
+  const form = new FormData();
+  const filename = path.basename(filePath);
+  const mimeType = mime.lookup(filename) || "image/jpeg";
 
-    form.append("file", fsExtra.createReadStream(filePath), filename);
-    form.append("filename", filename);
-    form.append("type", mimeType);
+  // append with explicit options so content-type is set
+  form.append("file", fsExtra.createReadStream(filePath), {
+    filename,
+    contentType: mimeType,
+  });
 
-    const headers = {
-      Authorization: `Token ${this.token}`,
-      ...form.getHeaders(),
-    };
-
-    try {
-      const length = await new Promise((resolve, reject) => {
-        form.getLength((err, len) => (err ? reject(err) : resolve(len)));
-      });
-      if (length) headers["Content-Length"] = length;
-    } catch (lenErr) {
-      console.warn("[uploadToReplicate] getLength failed:", lenErr.message);
-    }
-
-    const url = "https://api.replicate.com/v1/files";
-    const res = await axios.post(url, form, {
-      headers,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      timeout: 120000,
-      validateStatus: null,
-    });
-
-    console.log("[uploadToReplicate] Response status:", res.status, "data:", res.data);
-    if (res.status >= 400) {
-      throw new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
-    }
-
-    const publicUrl = res.data.urls?.get || res.data.url;
-    if (!publicUrl) {
-      throw new Error("No public URL returned");
-    }
-    return publicUrl;
+  const headers = {
+    Authorization: `Token ${this.token}`,
+    ...form.getHeaders(),
   };
+
+  // try to add content-length (optional)
+  try {
+    const length = await new Promise((resolve, reject) => {
+      form.getLength((err, len) => (err ? reject(err) : resolve(len)));
+    });
+    if (length) headers["Content-Length"] = length;
+  } catch (lenErr) {
+    console.warn("[uploadToReplicate] getLength failed:", lenErr.message);
+  }
+
+  const url = "https://api.replicate.com/v1/files";
+  const res = await axios.post(url, form, {
+    headers,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    timeout: 120000,
+    validateStatus: null,
+  });
+
+  console.log("[uploadToReplicate] Response status:", res.status, "data:", res.data);
+  if (res.status >= 400) {
+    throw new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
+  }
+
+  const publicUrl = res.data.urls?.get || res.data.url;
+  if (!publicUrl) {
+    throw new Error("No public URL returned from Replicate upload");
+  }
+  return publicUrl;
+};
+
 
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
@@ -314,12 +316,15 @@ getImageUrlFromPredictionOutput = (output) => {
     console.log(`[saveProcessedImage] Generated URL: ${fileUrl}`);
 
     // Verify file accessibility
-    try {
-      const verifyResponse = await axios.head(`http://127.0.0.1:5000${fileUrl}`, { timeout: 5000 });
-      console.log(`[saveProcessedImage] Local file verification status: ${verifyResponse.status}`);
-    } catch (verifyErr) {
-      console.error(`[saveProcessedImage] Local file verification failed: ${verifyErr.message}`);
-    }
+    // derive a base URL for verification — prefer env override, else try localhost with configured port
+const baseForVerification = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
+try {
+  const verifyResponse = await axios.head(`${baseForVerification.replace(/\/$/, '')}${fileUrl}`, { timeout: 5000 });
+  console.log(`[saveProcessedImage] Local file verification status: ${verifyResponse.status}`);
+} catch (verifyErr) {
+  console.warn(`[saveProcessedImage] Local file verification failed: ${verifyErr.message}`);
+}
+
 
     return { filename, path: filePath, url: fileUrl };
   } catch (error) {
@@ -521,24 +526,26 @@ createAvatar = async (req, res) => {
 
     // Build Replicate input
     const input = {
-      prompt,
-      cfg_scale,
-      num_steps,
-      image_width,
-      num_samples,
-      image_height,
-      output_format: "webp",
-      identity_scale,
-      mix_identities: false,
-      output_quality,
-      generation_mode: "fidelity",
-      main_face_image: mainImageUrl,
-      negative_prompt,
-      // Add auxiliary images
-      auxiliary_face_image1: auxImageUrls[0] || null,
-      auxiliary_face_image2: auxImageUrls[1] || null,
-      auxiliary_face_image3: auxImageUrls[2] || null,
-    };
+  prompt,
+  cfg_scale,
+  num_steps,
+  image_width,
+  num_samples,
+  image_height,
+  output_format: "webp",
+  identity_scale,
+  mix_identities: false,
+  output_quality,
+  generation_mode: "fidelity",
+  main_face_image: mainImageUrl,
+  negative_prompt,
+};
+
+// only include auxiliary fields if present (no nulls)
+if (auxImageUrls[0]) input.auxiliary_face_image1 = auxImageUrls[0];
+if (auxImageUrls[1]) input.auxiliary_face_image2 = auxImageUrls[1];
+if (auxImageUrls[2]) input.auxiliary_face_image3 = auxImageUrls[2];
+
 
     console.log("[Avatar Creator] Replicate input ready:", {
       prompt,
