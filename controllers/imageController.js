@@ -816,6 +816,47 @@ aiArt = async (req, res) => {
       return res.status(400).json({ error: "No target image provided (upload second image or provide image_to_become_url)" });
     }
 
+    // inside aiArt handler, after you determine targetImagePath
+const ensurePublicUrlForLocalFile = async (localPath) => {
+  const uploadsDir = path.join(__dirname, "../public/uploads");
+  await fs.mkdir(uploadsDir, { recursive: true });
+  const baseName = path.basename(localPath);
+  const dest = path.join(uploadsDir, baseName);
+
+  // copy local file to public/uploads (overwrites if exists)
+  await fs.copyFile(localPath, dest);
+
+  const baseForPublic = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
+  const publicUrl = `${baseForPublic.replace(/\/$/, '')}/uploads/${encodeURIComponent(baseName)}`;
+  return publicUrl;
+};
+
+if (targetImagePath) {
+  try {
+    console.log(`[AI Art] Publishing TARGET locally to public/uploads for Replicate fetch`);
+    // attempt to upload to replicate first (existing approach)
+    try {
+      targetImageUrl = await this.uploadToReplicate(targetImagePath);
+      console.log(`[AI Art] TARGET uploaded to Replicate: ${targetImageUrl}`);
+    } catch (uploadErr) {
+      console.warn("[AI Art] TARGET upload failed, falling back to public URL:", uploadErr.message);
+      // fallback: copy file to public uploads and give Replicate a public http(s) URL
+      targetImageUrl = await ensurePublicUrlForLocalFile(targetImagePath);
+      console.log(`[AI Art] TARGET served from: ${targetImageUrl}`);
+    }
+  } catch (err) {
+    console.error("[AI Art] Failed preparing TARGET public URL:", err);
+    // final fallback: use base64 (what you had)
+    const base64 = await this.imageToBase64(targetImagePath);
+    const mimeType = req.files[1]?.mimetype || "image/jpeg";
+    targetImageUrl = `data:${mimeType};base64,${base64}`;
+    console.log("[AI Art] TARGET using base64 fallback");
+  }
+} else {
+  console.log(`[AI Art] Using remote TARGET URL: ${targetImageUrl}`);
+}
+
+
     // Get parameters
     const prompt = req.body?.prompt || "a person";
     const prompt_strength = Number(req.body?.prompt_strength || 2);
