@@ -794,70 +794,50 @@ if (auxImageUrls[2]) input.auxiliary_face_image3 = auxImageUrls[2];
         .json({ error: "Mockup creation failed", message: (error.response?.detail || error.message) });
     }
   };
+// inside ImageController class
 aiArt = async (req, res) => {
+  // helper to publish a local file to /public/uploads so Replicate can fetch it
+  const ensurePublicUrlForLocalFile = async (localPath) => {
+    const uploadsDir = path.join(__dirname, "../public/uploads");
+    await fs.mkdir(uploadsDir, { recursive: true });
+    const baseName = path.basename(localPath);
+    const dest = path.join(uploadsDir, baseName);
+
+    // copy file to public/uploads
+    await fs.copyFile(localPath, dest);
+
+    const baseForPublic =
+      process.env.PUBLIC_BASE_URL ||
+      process.env.API_BASE_URL ||
+      `http://127.0.0.1:${process.env.PORT || 5000}`;
+    // ensure no double slashes
+    return `${baseForPublic.replace(/\/$/, "")}/uploads/${encodeURIComponent(baseName)}`;
+  };
+
   try {
     if (!req.files || req.files.length < 1) {
       return res.status(400).json({ error: "No source image provided" });
     }
 
-    // Source image is always first file
+    // -------------- Determine source and target paths/URLs --------------
     const sourceImagePath = req.files[0].path;
     console.log(`[AI Art] Source image: ${sourceImagePath}`);
 
-    // Get target image source
-    let targetImageUrl = req.body?.image_to_become_url; // Remote URL fallback
+    let targetImageUrl = req.body?.image_to_become_url || null; // remote url preferred
     let targetImagePath = null;
 
-    if (req.files.length === 2) {
-      // Local target image uploaded as second file
+    if (req.files.length >= 2) {
       targetImagePath = req.files[1].path;
-      console.log(`[AI Art] Local target image: ${targetImagePath}`);
+      console.log(`[AI Art] Local target image provided: ${targetImagePath}`);
     } else if (!targetImageUrl) {
-      return res.status(400).json({ error: "No target image provided (upload second image or provide image_to_become_url)" });
+      return res.status(400).json({
+        error: "No target image provided (upload second image or provide image_to_become_url)",
+      });
+    } else {
+      console.log(`[AI Art] Using remote target image URL: ${targetImageUrl}`);
     }
 
-    // inside aiArt handler, after you determine targetImagePath
-const ensurePublicUrlForLocalFile = async (localPath) => {
-  const uploadsDir = path.join(__dirname, "../public/uploads");
-  await fs.mkdir(uploadsDir, { recursive: true });
-  const baseName = path.basename(localPath);
-  const dest = path.join(uploadsDir, baseName);
-
-  // copy local file to public/uploads (overwrites if exists)
-  await fs.copyFile(localPath, dest);
-
-  const baseForPublic = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
-  const publicUrl = `${baseForPublic.replace(/\/$/, '')}/uploads/${encodeURIComponent(baseName)}`;
-  return publicUrl;
-};
-
-if (targetImagePath) {
-  try {
-    console.log(`[AI Art] Publishing TARGET locally to public/uploads for Replicate fetch`);
-    // attempt to upload to replicate first (existing approach)
-    try {
-      targetImageUrl = await this.uploadToReplicate(targetImagePath);
-      console.log(`[AI Art] TARGET uploaded to Replicate: ${targetImageUrl}`);
-    } catch (uploadErr) {
-      console.warn("[AI Art] TARGET upload failed, falling back to public URL:", uploadErr.message);
-      // fallback: copy file to public uploads and give Replicate a public http(s) URL
-      targetImageUrl = await ensurePublicUrlForLocalFile(targetImagePath);
-      console.log(`[AI Art] TARGET served from: ${targetImageUrl}`);
-    }
-  } catch (err) {
-    console.error("[AI Art] Failed preparing TARGET public URL:", err);
-    // final fallback: use base64 (what you had)
-    const base64 = await this.imageToBase64(targetImagePath);
-    const mimeType = req.files[1]?.mimetype || "image/jpeg";
-    targetImageUrl = `data:${mimeType};base64,${base64}`;
-    console.log("[AI Art] TARGET using base64 fallback");
-  }
-} else {
-  console.log(`[AI Art] Using remote TARGET URL: ${targetImageUrl}`);
-}
-
-
-    // Get parameters
+    // -------------- Params --------------
     const prompt = req.body?.prompt || "a person";
     const prompt_strength = Number(req.body?.prompt_strength || 2);
     const number_of_images = Number(req.body?.number_of_images || 1);
@@ -870,46 +850,68 @@ if (targetImagePath) {
     const num_steps = Number(req.body?.num_steps || 30);
     const cfg_scale = Number(req.body?.cfg_scale || 1.5);
 
-    // 1. Upload SOURCE image to Replicate
+    // -------------- 1) SOURCE: try uploadToReplicate, else publish public URL, else base64 --------------
     let sourceImageUrl;
     try {
-      console.log(`[AI Art] Uploading SOURCE image to Replicate`);
+      console.log(`[AI Art] Attempting to upload SOURCE to Replicate: ${sourceImagePath}`);
       sourceImageUrl = await this.uploadToReplicate(sourceImagePath);
-      console.log(`[AI Art] SOURCE uploaded: ${sourceImageUrl}`);
+      console.log(`[AI Art] SOURCE uploaded to Replicate: ${sourceImageUrl}`);
     } catch (uploadErr) {
-      console.error("[AI Art] SOURCE upload failed:", uploadErr.message);
-      const base64 = await this.imageToBase64(sourceImagePath);
-      const mimeType =
-        req.files[0]?.mimetype ||
-        mime.lookup(req.files[0]?.originalname) ||
-        "image/jpeg";
-      sourceImageUrl = `data:${mimeType};base64,${base64}`;
-
-      console.log("[AI Art] SOURCE using base64");
+      console.warn("[AI Art] SOURCE upload failed:", uploadErr.message);
+      // fallback: publish local file to public/uploads so Replicate can GET it
+      try {
+        sourceImageUrl = await ensurePublicUrlForLocalFile(sourceImagePath);
+        console.log("[AI Art] SOURCE served from public URL:", sourceImageUrl);
+      } catch (pubErr) {
+        console.warn("[AI Art] Failed publishing SOURCE to public/uploads:", pubErr.message);
+        // final fallback: base64 inline
+        const base64 = await this.imageToBase64(sourceImagePath);
+        const mimeType =
+          req.files[0]?.mimetype ||
+          mime.lookup(req.files[0]?.originalname) ||
+          "image/jpeg";
+        sourceImageUrl = `data:${mimeType};base64,${base64}`;
+        console.log("[AI Art] SOURCE using base64 fallback");
+      }
     }
 
-    // 2. Handle TARGET image
+    // -------------- 2) TARGET: if local, try uploadToReplicate, else publish public URL, else base64; if remote, keep it --------------
     if (targetImagePath) {
-      // Local target - upload to Replicate
       try {
-        console.log(`[AI Art] Uploading TARGET image to Replicate`);
+        console.log(`[AI Art] Attempting to upload TARGET to Replicate: ${targetImagePath}`);
         targetImageUrl = await this.uploadToReplicate(targetImagePath);
-        console.log(`[AI Art] TARGET uploaded: ${targetImageUrl}`);
+        console.log(`[AI Art] TARGET uploaded to Replicate: ${targetImageUrl}`);
       } catch (uploadErr) {
-        console.error("[AI Art] TARGET upload failed:", uploadErr.message);
-        const base64 = await this.imageToBase64(targetImagePath);
-        const mimeType = req.files[1].mimetype || "image/jpeg";
-        targetImageUrl = `data:${mimeType};base64,${base64}`;
-        console.log("[AI Art] TARGET using base64");
+        console.warn("[AI Art] TARGET upload failed:", uploadErr.message);
+        // fallback: publish local file to public/uploads
+        try {
+          targetImageUrl = await ensurePublicUrlForLocalFile(targetImagePath);
+          console.log("[AI Art] TARGET served from public URL:", targetImageUrl);
+        } catch (pubErr) {
+          console.warn("[AI Art] Failed publishing TARGET to public/uploads:", pubErr.message);
+          // final fallback: base64 inline
+          const base64 = await this.imageToBase64(targetImagePath);
+          const mimeType = req.files[1]?.mimetype || "image/jpeg";
+          targetImageUrl = `data:${mimeType};base64,${base64}`;
+          console.log("[AI Art] TARGET using base64 fallback");
+        }
       }
     } else {
-      console.log(`[AI Art] Using remote TARGET URL: ${targetImageUrl}`);
+      // targetImageUrl already a remote URL
+      console.log(`[AI Art] Using provided remote TARGET URL: ${targetImageUrl}`);
     }
 
-    // 3. Build Replicate input
+    // -------------- Log summary --------------
+    console.log("[AI Art] Replicate input ready:", {
+      image: (sourceImageUrl || "").substring(0, 120) + "...",
+      image_to_become: (targetImageUrl || "").substring(0, 120) + "...",
+      prompt,
+    });
+
+    // -------------- 3) Build Replicate input and run prediction --------------
     const input = {
-      image: sourceImageUrl,           // Source face image
-      image_to_become: targetImageUrl, // Target style image
+      image: sourceImageUrl,
+      image_to_become: targetImageUrl,
       prompt,
       prompt_strength,
       number_of_images,
@@ -923,29 +925,22 @@ if (targetImagePath) {
       cfg_scale,
     };
 
-    console.log("[AI Art] Replicate input ready:", {
-      image: sourceImageUrl.substring(0, 80) + "...",
-      image_to_become: targetImageUrl.substring(0, 80) + "...",
-      prompt
-    });
-
-    // 4. Run prediction
     const prediction = await this.runModel(models.aiArt, input);
-    console.log("[AI Art] Prediction status:", prediction.status);
 
+    console.log("[AI Art] Prediction status:", prediction.status);
     if (prediction.status !== "succeeded") {
       console.error("[AI Art] Prediction failed:", prediction.error || "Unknown error");
       throw new Error(`Prediction failed: ${prediction.error || "Unknown error"}`);
     }
 
-    // 5. Extract result
-    const imageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
-    console.log("[AI Art] Result URL:", imageUrl);
+    // -------------- 4) Extract result (robust) and save --------------
+    const resultImageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+    console.log("[AI Art] Result URL:", resultImageUrl);
 
-    // 6. Save and return
-    const saved = await this.saveProcessedImage(imageUrl, "ai-art");
+    const saved = await this.saveProcessedImage(resultImageUrl, "ai-art");
     if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
 
+    // -------------- 5) Return --------------
     return res.json({
       success: true,
       message: "AI Art generated successfully",
@@ -953,18 +948,18 @@ if (targetImagePath) {
       operation: "ai_art",
       prediction_id: prediction?.id || null,
     });
-
   } catch (error) {
-    console.error("[AI Art] Error:", error.message);
+    console.error("[AI Art] Error:", error?.response ?? error?.message ?? error);
     if (req.files) {
-      req.files.forEach(file => this.cleanupOnError(file));
+      req.files.forEach((file) => this.cleanupOnError(file));
     }
-    return res.status(500).json({ 
-      error: "AI Art generation failed", 
-      message: error.message 
+    return res.status(500).json({
+      error: "AI Art generation failed",
+      message: error?.message || String(error),
     });
   }
 };
+
 
   // Get available styles
   getStyles = async (req, res) => {
