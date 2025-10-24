@@ -49,18 +49,20 @@ uploadToReplicate = async (filePath) => {
 
   // Helper to attempt upload
   const attemptUpload = async (attempt = 0) => {
+    // Read file as buffer (avoids stream issues with axios)
+    let fileBuffer;
+    try {
+      fileBuffer = await fs.readFile(filePath);
+      console.log(`[uploadToReplicate] File buffer loaded: ${fileBuffer.length} bytes`);
+    } catch (readErr) {
+      throw new Error(`Failed to read file: ${readErr.message}`);
+    }
+
     const form = new FormData();
-    const readStream = fsExtra.createReadStream(filePath);
-
-    readStream.on("open", () => {
-      console.log(`[uploadToReplicate] Stream open for ${filePath}`);
+    form.append("file", fileBuffer, {
+      filename,
+      contentType: mimeType,
     });
-    readStream.on("error", (err) => {
-      console.error(`[uploadToReplicate] Stream error for ${filePath}: ${err.message}`);
-    });
-
-    // Append file with explicit options
-    form.append("file", readStream, { filename, contentType: mimeType });
 
     const headers = {
       Authorization: `Token ${this.token}`,
@@ -72,28 +74,28 @@ uploadToReplicate = async (filePath) => {
       headersPreview: Object.keys(headers),
       filename,
       mimeType,
+      fileSize: fileBuffer.length,
     });
 
     try {
-      // Use fetch instead of axios for better stream handling
-      const res = await fetch(url, {
-        method: "POST",
+      const res = await axios.post(url, form, {
         headers,
-        body: form,
+        timeout: 120000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        validateStatus: null,
       });
 
-      const json = await res.json().catch(() => ({}));
+      console.log(`[uploadToReplicate] Response status: ${res.status}, data:`, res.data);
 
-      console.log(`[uploadToReplicate] Response status: ${res.status}, data:`, json);
-
-      if (!res.ok) {
-        const err = new Error(`Failed to upload: ${JSON.stringify(json)}`);
+      if (res.status >= 400) {
+        const err = new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
         err.status = res.status;
-        err.response = json;
+        err.response = res.data;
         throw err;
       }
 
-      const publicUrl = json.urls?.get || json.url;
+      const publicUrl = res.data.urls?.get || res.data.url;
       if (!publicUrl) throw new Error("No public URL returned from Replicate upload");
       console.log(`[uploadToReplicate] Success: ${publicUrl}`);
       return publicUrl;
