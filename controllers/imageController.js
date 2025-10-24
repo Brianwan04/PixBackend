@@ -34,8 +34,13 @@ class ImageController {
 uploadToReplicate = async (filePath) => {
   const maxRetries = 2;
   const filename = path.basename(filePath);
-  const mimeType = mime.lookup(filename) || "image/jpeg";
-  const url = "https://api.replicate.com/v1/files";
+  const mimeType = mime.lookup(filename) || 'image/jpeg';
+  const url = 'https://api.replicate.com/v1/files';
+
+  // Validate API token
+  if (!this.token) {
+    throw new Error('Replicate API token is not set');
+  }
 
   // Sanity check file
   try {
@@ -49,7 +54,7 @@ uploadToReplicate = async (filePath) => {
 
   // Helper to attempt upload
   const attemptUpload = async (attempt = 0) => {
-    // Read file as buffer (avoids stream issues)
+    // Read file as buffer
     let fileBuffer;
     try {
       fileBuffer = await fs.readFile(filePath);
@@ -59,37 +64,29 @@ uploadToReplicate = async (filePath) => {
     }
 
     const form = new FormData();
-    form.append("file", fileBuffer, {
+    form.append('file', fileBuffer, {
       filename,
       contentType: mimeType,
     });
 
-    // Get form length for explicit Content-Length
-    let contentLength;
-    try {
-      contentLength = await new Promise((resolve, reject) => {
-        form.getLength((err, len) => {
-          if (err) reject(err);
-          else resolve(len);
-        });
-      });
-    } catch (lenErr) {
-      console.warn(`[uploadToReplicate] getLength failed: ${lenErr.message}, using estimate`);
-      contentLength = fileBuffer.length;
-    }
+    // Log FormData content
+    const formDataDebug = [];
+    form.forEach((value, key) => {
+      formDataDebug.push({ key, value: value instanceof Buffer ? `[Buffer: ${value.length} bytes]` : value });
+    });
+    console.log(`[uploadToReplicate] FormData content:`, JSON.stringify(formDataDebug, null, 2));
 
     const headers = {
       Authorization: `Token ${this.token}`,
-      ...form.getHeaders(),
+      'Content-Type': `multipart/form-data; boundary=${form.getBoundary()}`,
     };
-    if (contentLength) headers["Content-Length"] = contentLength;
 
     console.log(`[uploadToReplicate] Uploading ${filename} (attempt ${attempt + 1})`, {
       url,
-      headersPreview: Object.keys(headers),
+      headers,
       filename,
       mimeType,
-      contentLength,
+      fileSize: fileBuffer.length,
     });
 
     try {
@@ -111,7 +108,7 @@ uploadToReplicate = async (filePath) => {
       }
 
       const publicUrl = res.data.urls?.get || res.data.url;
-      if (!publicUrl) throw new Error("No public URL returned from Replicate upload");
+      if (!publicUrl) throw new Error('No public URL returned from Replicate upload');
       console.log(`[uploadToReplicate] Success: ${publicUrl}`);
       return publicUrl;
     } catch (err) {
@@ -122,15 +119,17 @@ uploadToReplicate = async (filePath) => {
       });
       if (attempt < maxRetries) {
         console.log(`[uploadToReplicate] Retrying upload (${attempt + 2})...`);
-        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1))); // Longer delay
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
         return attemptUpload(attempt + 1);
       }
+      console.warn(`[uploadToReplicate] Upload failed after ${maxRetries + 1} attempts, falling back to base64`);
       throw err;
     }
   };
 
   return attemptUpload(0);
 };
+
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
     if (!modelId) return null;
