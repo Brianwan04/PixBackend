@@ -49,7 +49,7 @@ uploadToReplicate = async (filePath) => {
 
   // Helper to attempt upload
   const attemptUpload = async (attempt = 0) => {
-    // Read file as buffer (avoids stream issues with axios)
+    // Read file as buffer (avoids stream issues)
     let fileBuffer;
     try {
       fileBuffer = await fs.readFile(filePath);
@@ -64,17 +64,32 @@ uploadToReplicate = async (filePath) => {
       contentType: mimeType,
     });
 
+    // Get form length for explicit Content-Length
+    let contentLength;
+    try {
+      contentLength = await new Promise((resolve, reject) => {
+        form.getLength((err, len) => {
+          if (err) reject(err);
+          else resolve(len);
+        });
+      });
+    } catch (lenErr) {
+      console.warn(`[uploadToReplicate] getLength failed: ${lenErr.message}, using estimate`);
+      contentLength = fileBuffer.length;
+    }
+
     const headers = {
       Authorization: `Token ${this.token}`,
       ...form.getHeaders(),
     };
+    if (contentLength) headers["Content-Length"] = contentLength;
 
     console.log(`[uploadToReplicate] Uploading ${filename} (attempt ${attempt + 1})`, {
       url,
       headersPreview: Object.keys(headers),
       filename,
       mimeType,
-      fileSize: fileBuffer.length,
+      contentLength,
     });
 
     try {
@@ -107,7 +122,7 @@ uploadToReplicate = async (filePath) => {
       });
       if (attempt < maxRetries) {
         console.log(`[uploadToReplicate] Retrying upload (${attempt + 2})...`);
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1))); // Longer delay
         return attemptUpload(attempt + 1);
       }
       throw err;
@@ -116,9 +131,6 @@ uploadToReplicate = async (filePath) => {
 
   return attemptUpload(0);
 };
-
-
-
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
     if (!modelId) return null;
