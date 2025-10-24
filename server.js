@@ -26,9 +26,12 @@ if (TRUST_PROXY) app.set("trust proxy", 1);
 
 // Initialize directories
 const initializeDirectories = async () => {
-  const dirs = ["temp/uploads", "public/processed"].map((dir) =>
-    path.join(__dirname, dir)
-  );
+  const dirs = [
+    "temp/uploads",
+    "public/processed",
+    "public/uploads",   // <= make sure uploads exists and is served
+  ].map((dir) => path.join(__dirname, dir));
+
   for (const dir of dirs) {
     try {
       await fs.mkdir(dir, { recursive: true });
@@ -39,6 +42,7 @@ const initializeDirectories = async () => {
   }
 };
 initializeDirectories();
+
 
 // Security
 app.use(
@@ -102,6 +106,13 @@ app.use(
   "/processed",
   express.static(path.join(__dirname, "public", "processed"))
 );
+
+// Serve uploads so files copied to public/uploads are reachable
+app.use(
+  "/uploads",
+  express.static(path.join(__dirname, "public", "uploads"))
+);
+
 
 // Routes
 app.use("/api/images", imageRoutes);
