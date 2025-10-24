@@ -32,7 +32,7 @@ class ImageController {
 
   // paste this into controllers/imageController.js replacing existing uploadToReplicate
 uploadToReplicate = async (filePath) => {
-  const maxRetries = 2; // Increased to 2 retries for robustness
+  const maxRetries = 2;
   const filename = path.basename(filePath);
   const mimeType = mime.lookup(filename) || "image/jpeg";
   const url = "https://api.replicate.com/v1/files";
@@ -59,7 +59,7 @@ uploadToReplicate = async (filePath) => {
       console.error(`[uploadToReplicate] Stream error for ${filePath}: ${err.message}`);
     });
 
-    // Append file with explicit filename and content type
+    // Append file with explicit options
     form.append("file", readStream, { filename, contentType: mimeType });
 
     const headers = {
@@ -75,24 +75,25 @@ uploadToReplicate = async (filePath) => {
     });
 
     try {
-      const res = await axios.post(url, form, {
+      // Use fetch instead of axios for better stream handling
+      const res = await fetch(url, {
+        method: "POST",
         headers,
-        timeout: 120000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        validateStatus: null,
+        body: form,
       });
 
-      console.log(`[uploadToReplicate] Response status: ${res.status}, data:`, res.data);
+      const json = await res.json().catch(() => ({}));
 
-      if (res.status >= 400) {
-        const err = new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
+      console.log(`[uploadToReplicate] Response status: ${res.status}, data:`, json);
+
+      if (!res.ok) {
+        const err = new Error(`Failed to upload: ${JSON.stringify(json)}`);
         err.status = res.status;
-        err.response = res.data;
+        err.response = json;
         throw err;
       }
 
-      const publicUrl = res.data.urls?.get || res.data.url;
+      const publicUrl = json.urls?.get || json.url;
       if (!publicUrl) throw new Error("No public URL returned from Replicate upload");
       console.log(`[uploadToReplicate] Success: ${publicUrl}`);
       return publicUrl;
