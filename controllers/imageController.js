@@ -37,7 +37,6 @@ uploadToReplicate = async (filePath) => {
   const mimeType = mime.lookup(filename) || 'image/jpeg';
   const url = 'https://api.replicate.com/v1/files';
 
-  // Validate API token
   if (!this.token) {
     throw new Error('Replicate API token is not set');
   }
@@ -52,41 +51,57 @@ uploadToReplicate = async (filePath) => {
     throw new Error(`File not accessible: ${filePath} - ${err.message}`);
   }
 
-  // Helper to attempt upload
   const attemptUpload = async (attempt = 0) => {
-    // Read file as buffer
-    let fileBuffer;
+    // Use a stream (better for memory) but Buffer works too
+    let stream;
     try {
-      fileBuffer = await fs.readFile(filePath);
-      console.log(`[uploadToReplicate] File buffer loaded: ${fileBuffer.length} bytes`);
-    } catch (readErr) {
-      throw new Error(`Failed to read file: ${readErr.message}`);
+      stream = fsExtra.createReadStream(filePath);
+      // note: fsExtra here is node's fs (you imported as fsExtra = require('fs'))
+    } catch (err) {
+      throw new Error(`Failed to create read stream: ${err.message}`);
     }
 
     const form = new FormData();
-    form.append('file', fileBuffer, {
+    // Append as stream (recommended)
+    form.append('file', stream, {
       filename,
       contentType: mimeType,
     });
 
-    // Log FormData content
-    const formDataDebug = [];
-    form.forEach((value, key) => {
-      formDataDebug.push({ key, value: value instanceof Buffer ? `[Buffer: ${value.length} bytes]` : value });
+    // Prepare headers using form-data helper (includes the correct boundary)
+    const formHeaders = form.getHeaders(); // { 'content-type': 'multipart/form-data; boundary=----...' }
+
+    // Try to get content-length (optional but useful)
+    let contentLength = null;
+    try {
+      contentLength = await new Promise((resolve, reject) => {
+        form.getLength((err, length) => {
+          if (err) return reject(err);
+          resolve(length);
+        });
+      });
+      formHeaders['Content-Length'] = contentLength;
+    } catch (err) {
+      console.warn('[uploadToReplicate] Could not determine Content-Length:', err.message);
+    }
+
+    // Log safe debug info (do NOT attempt to iterate form internals)
+    console.log('[uploadToReplicate] Prepared FormData for upload:', {
+      filename,
+      mimeType,
+      estimatedSize: contentLength || 'unknown',
+      headersPreview: formHeaders ? Object.keys(formHeaders) : null,
     });
-    console.log(`[uploadToReplicate] FormData content:`, JSON.stringify(formDataDebug, null, 2));
 
     const headers = {
       Authorization: `Token ${this.token}`,
-      'Content-Type': `multipart/form-data; boundary=${form.getBoundary()}`,
+      ...formHeaders,
     };
 
     console.log(`[uploadToReplicate] Uploading ${filename} (attempt ${attempt + 1})`, {
       url,
-      headers,
       filename,
       mimeType,
-      fileSize: fileBuffer.length,
     });
 
     try {
@@ -129,6 +144,7 @@ uploadToReplicate = async (filePath) => {
 
   return attemptUpload(0);
 };
+
 
   // Helper: Extract version if model id is pinned like "owner/model:version"
   extractPinnedVersion = (modelId) => {
