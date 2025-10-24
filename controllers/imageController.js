@@ -34,81 +34,55 @@ class ImageController {
 uploadToReplicate = async (filePath) => {
   const maxRetries = 1;
   const filename = path.basename(filePath);
+  const ext = path.extname(filename).slice(1) || 'jpg'; // e.g., 'jpg'
   const mimeType = mime.lookup(filename) || "image/jpeg";
-  const url = "https://api.replicate.com/v1/files";
 
-  // sanity check file
-  try {
-    await fs.access(filePath); // will throw if not accessible
-  } catch (err) {
-    throw new Error(`File not accessible: ${filePath} - ${err.message}`);
-  }
-
-  // helper to attempt upload
-  const attemptUpload = async (attempt = 0) => {
-    const form = new FormData();
-    const readStream = fsExtra.createReadStream(filePath);
-
-    readStream.on("open", () => {
-      console.log(`[uploadToReplicate] stream open for ${filePath}`);
-    });
-    readStream.on("error", (err) => {
-      console.error(`[uploadToReplicate] stream error for ${filePath}:`, err.message);
-    });
-
-    // append file with explicit options (filename + contentType)
-    // Note: form-data accepts an options object as third param
-    form.append("file", readStream, { filename, contentType: mimeType });
-
-    // build headers from form
-    const headers = {
-      Authorization: `Token ${this.token}`,
-      ...form.getHeaders(),
-    };
-
-    console.log(`[uploadToReplicate] uploading ${filename} (attempt ${attempt + 1})`, {
-      url,
-      headersPreview: Object.keys(headers),
-      filename,
-      mimeType,
-    });
-
-    try {
-      const res = await axios.post(url, form, {
-        headers,
-        timeout: 120000,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        validateStatus: null,
-      });
-
-      console.log("[uploadToReplicate] Response status:", res.status, "data:", res.data);
-      if (res.status >= 400) {
-        const err = new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
-        err.status = res.status;
-        err.response = res.data;
-        throw err;
-      }
-
-      const publicUrl = res.data.urls?.get || res.data.url;
-      if (!publicUrl) throw new Error("No public URL returned from Replicate upload");
-      return publicUrl;
-    } catch (err) {
-      console.error(`[uploadToReplicate] upload error (attempt ${attempt + 1}):`, {
-        message: err.message,
-        status: err.status,
-        response: err.response,
-      });
-      if (attempt < maxRetries) {
-        console.log(`[uploadToReplicate] retrying upload (${attempt + 2})...`);
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-        return attemptUpload(attempt + 1);
-      }
-      throw err;
-    }
+  // Step 1: Get presigned URL from Replicate
+  const initUrl = `https://api.replicate.com/v1/upload/${ext}`;
+  const initHeaders = {
+    Authorization: `Token ${this.token}`,
+    "Content-Type": "application/json",
   };
 
-  return attemptUpload(0);
+  console.log("[uploadToReplicate] Getting presigned URL:", initUrl);
+
+  const initRes = await fetch(initUrl, {
+    method: "POST",
+    headers: initHeaders,
+  });
+
+  const initJson = await initRes.json().catch(() => ({}));
+  if (!initRes.ok || !initJson.urls?.put) {
+    throw new Error(`Failed to get presigned URL: ${JSON.stringify(initJson)}`);
+  }
+
+  const { id, urls } = initJson;
+  const putUrl = urls.put;
+  const serveUrl = urls.get;
+
+  console.log("[uploadToReplicate] Presigned PUT URL:", putUrl.substring(0, 50) + "...");
+
+  // Step 2: PUT file to presigned URL
+  const fileData = await fs.readFile(filePath);
+  const putHeaders = {
+    "Content-Type": mimeType,
+    "Content-Length": fileData.length,
+  };
+
+  const putRes = await fetch(putUrl, {
+    method: "PUT",
+    headers: putHeaders,
+    body: fileData,
+  });
+
+  if (!putRes.ok) {
+    const putError = await putRes.text().catch(() => 'Unknown error');
+    throw new Error(`PUT failed: ${putRes.status} - ${putError}`);
+  }
+
+  console.log("[uploadToReplicate] Upload success - Serve URL:", serveUrl);
+
+  return serveUrl;
 };
 
 
