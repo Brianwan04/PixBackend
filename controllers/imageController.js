@@ -30,52 +30,87 @@ class ImageController {
     this.versionCache = {};
   }
 
-  uploadToReplicate = async (filePath) => {
-  const form = new FormData();
+  // paste this into controllers/imageController.js replacing existing uploadToReplicate
+uploadToReplicate = async (filePath) => {
+  const maxRetries = 1;
   const filename = path.basename(filePath);
   const mimeType = mime.lookup(filename) || "image/jpeg";
+  const url = "https://api.replicate.com/v1/files";
 
-  // append with explicit options so content-type is set
-  form.append("file", fsExtra.createReadStream(filePath), {
-    filename,
-    contentType: mimeType,
-  });
+  // sanity check file
+  try {
+    await fs.access(filePath); // will throw if not accessible
+  } catch (err) {
+    throw new Error(`File not accessible: ${filePath} - ${err.message}`);
+  }
 
-  const headers = {
-    Authorization: `Token ${this.token}`,
-    ...form.getHeaders(),
+  // helper to attempt upload
+  const attemptUpload = async (attempt = 0) => {
+    const form = new FormData();
+    const readStream = fsExtra.createReadStream(filePath);
+
+    readStream.on("open", () => {
+      console.log(`[uploadToReplicate] stream open for ${filePath}`);
+    });
+    readStream.on("error", (err) => {
+      console.error(`[uploadToReplicate] stream error for ${filePath}:`, err.message);
+    });
+
+    // append file with explicit options (filename + contentType)
+    // Note: form-data accepts an options object as third param
+    form.append("file", readStream, { filename, contentType: mimeType });
+
+    // build headers from form
+    const headers = {
+      Authorization: `Token ${this.token}`,
+      ...form.getHeaders(),
+    };
+
+    console.log(`[uploadToReplicate] uploading ${filename} (attempt ${attempt + 1})`, {
+      url,
+      headersPreview: Object.keys(headers),
+      filename,
+      mimeType,
+    });
+
+    try {
+      const res = await axios.post(url, form, {
+        headers,
+        timeout: 120000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        validateStatus: null,
+      });
+
+      console.log("[uploadToReplicate] Response status:", res.status, "data:", res.data);
+      if (res.status >= 400) {
+        const err = new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
+        err.status = res.status;
+        err.response = res.data;
+        throw err;
+      }
+
+      const publicUrl = res.data.urls?.get || res.data.url;
+      if (!publicUrl) throw new Error("No public URL returned from Replicate upload");
+      return publicUrl;
+    } catch (err) {
+      console.error(`[uploadToReplicate] upload error (attempt ${attempt + 1}):`, {
+        message: err.message,
+        status: err.status,
+        response: err.response,
+      });
+      if (attempt < maxRetries) {
+        console.log(`[uploadToReplicate] retrying upload (${attempt + 2})...`);
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        return attemptUpload(attempt + 1);
+      }
+      throw err;
+    }
   };
 
-  // try to add content-length (optional)
-  try {
-    const length = await new Promise((resolve, reject) => {
-      form.getLength((err, len) => (err ? reject(err) : resolve(len)));
-    });
-    if (length) headers["Content-Length"] = length;
-  } catch (lenErr) {
-    console.warn("[uploadToReplicate] getLength failed:", lenErr.message);
-  }
-
-  const url = "https://api.replicate.com/v1/files";
-  const res = await axios.post(url, form, {
-    headers,
-    maxBodyLength: Infinity,
-    maxContentLength: Infinity,
-    timeout: 120000,
-    validateStatus: null,
-  });
-
-  console.log("[uploadToReplicate] Response status:", res.status, "data:", res.data);
-  if (res.status >= 400) {
-    throw new Error(`Failed to upload: ${JSON.stringify(res.data)}`);
-  }
-
-  const publicUrl = res.data.urls?.get || res.data.url;
-  if (!publicUrl) {
-    throw new Error("No public URL returned from Replicate upload");
-  }
-  return publicUrl;
+  return attemptUpload(0);
 };
+
 
 
 
