@@ -705,33 +705,94 @@ if (auxImageUrls[2]) input.auxiliary_face_image3 = auxImageUrls[2];
   };
 
   // 6. Image Upscale
-  upscaleImage = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        scale: 2,
-      };
-
-      const prediction = await this.runModel(models.imageUpscale, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "upscaled"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Image upscaled",
-        downloadUrl: saved.url,
-        operation: "upscale",
-      });
-    } catch (error) {
-      console.error("[Upscale] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res.status(500).json({ error: "Upscale failed", message: (error.response?.detail || error.message) });
+ upscaleImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No image provided" });
     }
-  };
+
+    // Read file and build a data URI
+    const mimeType = req.file.mimetype || "image/jpeg";
+    const base64 = await this.imageToBase64(req.file.path);
+    const dataUri = `data:${mimeType};base64,${base64}`;
+
+    // Build a robust input object that covers common model param names
+    const input = {
+      // image payload under multiple common keys (some models expect `img`, some `image` or `image_url`)
+      image: dataUri,
+      img: dataUri,
+      image_url: dataUri,
+
+      // scale/upscale variants (some sample code uses `upscale`)
+      scale: 4,
+      upscale: 4,
+
+      // model-specific options (keep these if your model accepts them)
+      face_upsample: true,
+      background_enhance: true,
+      codeformer_fidelity: 0.1,
+    };
+
+    // Safe log: do not print entire base64 (trim)
+    const safeLog = {
+      ...input,
+      image: (input.image || "").substring(0, 80) + "...[trimmed]",
+      img: (input.img || "").substring(0, 80) + "...[trimmed]",
+      image_url: (input.image_url || "").substring(0, 80) + "...[trimmed]",
+    };
+    console.log("[Upscale] Prepared input for model:", safeLog);
+
+    // Run the model
+    const prediction = await this.runModel(models.imageUpscale, input);
+    console.log("[Upscale] Prediction finished with status:", prediction?.status);
+
+    if (prediction.status !== "succeeded") {
+      // If replicate returned an error message, include it
+      const errMsg =
+        prediction?.error ||
+        prediction?.logs ||
+        JSON.stringify(prediction?.output || prediction) ||
+        "Unknown prediction failure";
+      throw new Error(`Prediction failed: ${errMsg}`);
+    }
+
+    // Extract image URL robustly
+    const resultUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+    console.log("[Upscale] Result image URL:", resultUrl);
+
+    // Save image locally and return a public URL
+    const saved = await this.saveProcessedImage(resultUrl, "upscaled");
+    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+    return res.json({
+      success: true,
+      message: "Image upscaled",
+      downloadUrl: saved.url,
+      operation: "upscale",
+      prediction_id: prediction?.id || null,
+    });
+  } catch (error) {
+    // Log as much safe info as possible
+    console.error("[Upscale] Error:", {
+      message: error.message,
+      response: error.response || error.response?.data || null,
+      stack: error.stack,
+    });
+
+    // Cleanup uploaded temp file
+    await this.cleanupOnError(req.file);
+
+    // Return helpful error to client (avoid leaking secrets)
+    const userMessage =
+      error.message?.includes("input: img is required") ||
+      /img is required/i.test(error.message)
+        ? "Model expects a different image parameter (img). Server attempted multiple fallbacks."
+        : error.message || "Upscale failed";
+
+    return res.status(500).json({ error: "Upscale failed", message: userMessage });
+  }
+};
+
 
   // 7. Style Transfer
   styleTransfer = async (req, res) => {

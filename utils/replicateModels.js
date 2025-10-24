@@ -21,10 +21,8 @@ module.exports = {
       name: "SDXL Lightning"
     },
     imageUpscale: {
-      id: "tencentarc/gfpgan:0fbacf7afc6c144e5be9767cff80f25aff23e52b0708f17e20f9879b2f21516c",
-      name: "GFP-GAN Upscale"
-      //id: "sczhou/codeformer:7de2ea26c616d5bf2245ad0d5e24f0ff9a6204578a5c876db53142edd9d2cd56",
-     // name: "CodeFormer Upscale"
+      id: "sczhou/codeformer:7de2ea26c616d5bf2245ad0d5e24f0ff9a6204578a5c876db53142edd9d2cd56",
+      name: "CodeFormer Upscale"
     },
     aiArt: {
       id: "fofr/become-image:8d0b076a2aff3904dfcec3253c778e0310a68f78483c4699c7fd800f3051d2b3",
