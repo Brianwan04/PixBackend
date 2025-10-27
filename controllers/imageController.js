@@ -203,6 +203,91 @@ uploadToReplicate = async (filePath) => {
     return versionId;
   };
 
+  // return array of image urls (robust)
+getImageUrlsFromPredictionOutput = (output) => {
+  const imageRegex = /\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/i;
+
+  const tryExtract = (item) => {
+    if (!item) return null;
+    if (typeof item === "object") {
+      // common object keys
+      const candidate = item.url || item.artifact?.url || item.download_url || item.uri || item.image;
+      if (!candidate) return null;
+      if (typeof candidate === "string") {
+        if (candidate.startsWith("data:image/") || imageRegex.test(candidate) || candidate.includes("replicate.delivery") || candidate.startsWith("http")) {
+          return candidate;
+        }
+      }
+      return null;
+    }
+    if (typeof item === "string") {
+      if (item.startsWith("data:image/") || imageRegex.test(item) || item.startsWith("http://") || item.startsWith("https://") || item.includes("replicate.delivery")) {
+        return item;
+      }
+    }
+    return null;
+  };
+
+  const results = [];
+
+  // If output is an array, map through it
+  if (Array.isArray(output) && output.length > 0) {
+    for (const item of output) {
+      const v = tryExtract(item);
+      if (v) results.push(v);
+    }
+    // also handle case where items may be objects containing nested arrays
+    if (!results.length) {
+      // try deeper extraction
+      for (const item of output) {
+        if (item && typeof item === 'object') {
+          for (const key of ['url','download_url','artifact','image','images','artifacts']) {
+            const candidate = item[key];
+            if (!candidate) continue;
+            if (Array.isArray(candidate)) {
+              candidate.forEach(c => {
+                const ex = tryExtract(c);
+                if (ex) results.push(ex);
+              });
+            } else {
+              const ex = tryExtract(candidate);
+              if (ex) results.push(ex);
+            }
+          }
+        }
+      }
+    }
+  } else if (output && typeof output === 'object') {
+    // If object: try common fields
+    const candidates = [];
+    for (const key of ['url','download_url','artifact','image','images','artifacts','files']) {
+      if (output[key]) candidates.push(output[key]);
+    }
+    // if output.images is an array of strings/objects
+    for (const cand of candidates) {
+      if (Array.isArray(cand)) {
+        for (const it of cand) {
+          const ex = tryExtract(it);
+          if (ex) results.push(ex);
+        }
+      } else {
+        const ex = tryExtract(cand);
+        if (ex) results.push(ex);
+      }
+    }
+    // final fallback: if object itself looks like an image object
+    const ex = tryExtract(output);
+    if (ex) results.push(ex);
+  } else if (typeof output === 'string') {
+    const ex = tryExtract(output);
+    if (ex) results.push(ex);
+  }
+
+  // Deduplicate and return
+  return Array.from(new Set(results));
+};
+
+
   // Create a prediction via POST /v1/predictions and wait (Prefer: wait=60)
   createReplicatePrediction = async (versionId, input = {}, waitSeconds = 60) => {
   const url = "https://api.replicate.com/v1/predictions";
@@ -348,33 +433,61 @@ getImageUrlFromPredictionOutput = (output) => {
   saveProcessedImage = async (imageUrl, prefix = "processed") => {
   try {
     console.log(`[saveProcessedImage] Downloading image from: ${imageUrl}`);
-    const response = await axios.get(imageUrl, {
-      responseType: "arraybuffer",
-      timeout: 30000,
-      validateStatus: (status) => status >= 200 && status < 300,
-    });
 
-    const contentType = response.headers["content-type"];
-    const dataSize = response.data.length;
-    console.log(`[saveProcessedImage] Content-Type: ${contentType}, Size: ${dataSize} bytes`);
+    let buffer;
+    let contentType;
 
+    if (typeof imageUrl === 'string' && imageUrl.startsWith('data:')) {
+      // data URL: data:<mime>;base64,<base64data>
+      const match = imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
+      if (!match) throw new Error('Invalid data URL');
+      contentType = match[1];
+      const b64 = match[2];
+      buffer = Buffer.from(b64, 'base64');
+    } else {
+      // remote URL: GET it
+      const response = await axios.get(imageUrl, {
+        responseType: "arraybuffer",
+        timeout: 30000,
+        validateStatus: (status) => status >= 200 && status < 300,
+      });
+
+      contentType = response.headers["content-type"] || '';
+      buffer = Buffer.from(response.data);
+    }
+
+    // Basic validation
     if (!contentType.startsWith("image/")) {
       console.error(`[saveProcessedImage] Invalid content type: ${contentType}`);
-      console.error(`[saveProcessedImage] Response content: ${Buffer.from(response.data).toString('utf8')}`);
+      // try to inspect response as utf8 for server error messages if buffer small
+      if (buffer && buffer.length < 2000) {
+        console.error(`[saveProcessedImage] Response content (text): ${buffer.toString('utf8')}`);
+      }
       throw new Error(`Invalid content type: ${contentType}`);
     }
 
-    if (dataSize < 1000) {
-      console.error(`[saveProcessedImage] Downloaded file too small: ${dataSize} bytes`);
-      console.error(`[saveProcessedImage] Response content: ${Buffer.from(response.data).toString('utf8')}`);
+    if (!buffer || buffer.length < 100) {
+      console.error(`[saveProcessedImage] Downloaded buffer too small: ${buffer ? buffer.length : 0}`);
       throw new Error("Downloaded file is too small, likely invalid");
     }
 
-    const filename = `${prefix}-${Date.now()}.png`;
+    // decide extension from contentType
+    let ext = 'png';
+    try {
+      ext = contentType.split('/')[1].split(';')[0];
+      if (ext === 'jpeg') ext = 'jpg';
+      if (ext.includes('+')) ext = ext.split('+')[0];
+      // sanitize
+      if (!/^[a-z0-9]+$/i.test(ext)) ext = 'png';
+    } catch (e) {
+      ext = 'png';
+    }
+
+    const filename = `${prefix}-${Date.now()}.${ext}`;
     const dir = path.join(__dirname, "../public/processed");
     await fs.mkdir(dir, { recursive: true });
     const filePath = path.join(dir, filename);
-    await fs.writeFile(filePath, response.data);
+    await fs.writeFile(filePath, buffer);
 
     const fileStats = await fs.stat(filePath);
     console.log(`[saveProcessedImage] Saved file: ${filePath}, Size: ${fileStats.size} bytes`);
@@ -382,16 +495,14 @@ getImageUrlFromPredictionOutput = (output) => {
     const fileUrl = `/processed/${filename}`;
     console.log(`[saveProcessedImage] Generated URL: ${fileUrl}`);
 
-    // Verify file accessibility
-    // derive a base URL for verification — prefer env override, else try localhost with configured port
-const baseForVerification = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
-try {
-  const verifyResponse = await axios.head(`${baseForVerification.replace(/\/$/, '')}${fileUrl}`, { timeout: 5000 });
-  console.log(`[saveProcessedImage] Local file verification status: ${verifyResponse.status}`);
-} catch (verifyErr) {
-  console.warn(`[saveProcessedImage] Local file verification failed: ${verifyErr.message}`);
-}
-
+    const baseForVerification = process.env.PUBLIC_BASE_URL || process.env.API_BASE_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
+    try {
+      // If running locally with data URL saved, HEAD should work; swallow errors
+      const verifyResponse = await axios.head(`${baseForVerification.replace(/\/$/, '')}${fileUrl}`, { timeout: 5000 });
+      console.log(`[saveProcessedImage] Local file verification status: ${verifyResponse.status}`);
+    } catch (verifyErr) {
+      console.warn(`[saveProcessedImage] Local file verification failed: ${verifyErr.message}`);
+    }
 
     return { filename, path: filePath, url: fileUrl };
   } catch (error) {
@@ -399,6 +510,7 @@ try {
     throw new Error(`Failed to save image: ${error.message}`);
   }
 };
+
 
   // Wrapper to run a model by its model entry from utils/replicateModels
   runModel = async (modelEntry, input = {}) => {
@@ -541,8 +653,8 @@ createAvatar = async (req, res) => {
     const cfg_scale = Number(req.body?.cfg_scale || 1.2);
     const num_steps = Number(req.body?.num_steps || 4);
     const num_samples = Number(req.body?.num_samples || 4);
-    const image_width = Number(req.body?.image_width || 768);
-    const image_height = Number(req.body?.image_height || 1024);
+    const image_width = Number(req.body?.image_width || 1024);
+    const image_height = Number(req.body?.image_height || 1024); 
     const identity_scale = Number(req.body?.identity_scale || 0.8);
     const output_quality = Number(req.body?.output_quality || 80);
     const negative_prompt = req.body?.negative_prompt || "flaws in the eyes, flaws in the face, flaws, lowres, non-HDRi, low quality, worst quality, artifacts noise, text, watermark, glitch, deformed, mutated, ugly, disfigured, hands, low resolution, partially rendered objects, deformed or partially rendered eyes, deformed, deformed eyeballs, cross-eyed, blurry";
@@ -633,28 +745,54 @@ if (auxImageUrls[2]) input.auxiliary_face_image3 = auxImageUrls[2];
     }
 
     // Extract image URL
-    let firstImageUrl;
-    try {
-      firstImageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
-      console.log("[Avatar Creator] First result URL:", firstImageUrl);
-    } catch (extractErr) {
-      console.error("[Avatar Creator] Failed to extract image URL:", extractErr.message);
-      throw new Error(`Failed to extract image URL: ${extractErr.message}`);
-    }
+    // Extract ALL image URLs from prediction output and save them
+let imageUrls = [];
+try {
+  imageUrls = this.getImageUrlsFromPredictionOutput(prediction.output);
+  if (!imageUrls || !imageUrls.length) {
+    // fallback: try single extractor if shape is unexpected
+    const single = this.getImageUrlFromPredictionOutput(prediction.output);
+    if (single) imageUrls = [single];
+  }
+  if (!imageUrls.length) {
+    console.error("[Avatar Creator] No image URLs found in prediction output:", JSON.stringify(prediction.output).slice(0,200));
+    throw new Error("No image URLs found in prediction output");
+  }
+  console.log(`[Avatar Creator] Found ${imageUrls.length} image URLs`);
+} catch (extractErr) {
+  console.error("[Avatar Creator] Failed to extract image URLs:", extractErr.message);
+  throw extractErr;
+}
 
-    // Save and return
-    const saved = await this.saveProcessedImage(firstImageUrl, "avatar-creator");
-    if (req.filesToCleanup) {
-      req.filesToCleanup.push(saved.path);
-    }
+// Save all images (sequential to avoid hammering)
+const savedUrls = [];
+for (let i = 0; i < imageUrls.length; i++) {
+  const url = imageUrls[i];
+  try {
+    const saved = await this.saveProcessedImage(url, `avatar-creator-${i+1}`);
+    savedUrls.push(saved.url);
+    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+    console.log(`[Avatar Creator] Saved image ${i+1}: ${saved.url}`);
+  } catch (saveErr) {
+    console.error(`[Avatar Creator] Failed to save image ${i+1}:`, saveErr.message);
+    // continue — we will still return what succeeded
+  }
+}
 
-    return res.json({
-      success: true,
-      message: "Avatar created successfully",
-      downloadUrl: saved.url,
-      operation: "avatar_creator",
-      prediction_id: prediction?.id || null,
-    });
+if (!savedUrls.length) {
+  throw new Error("Failed to save any result images");
+}
+
+// Return all saved urls and first one as downloadUrl for compatibility
+return res.json({
+  success: true,
+  message: "Avatar created successfully",
+  allImages: savedUrls,
+  downloadUrl: savedUrls[0],
+  operation: "avatar_creator",
+  prediction_id: prediction?.id || null,
+});
+
   } catch (error) {
     console.error("[Avatar Creator] Error:", error.message);
     if (req.files) {
