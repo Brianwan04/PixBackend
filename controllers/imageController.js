@@ -597,35 +597,144 @@ getImageUrlFromPredictionOutput = (output) => {
   };
 
   // 3. Magic Eraser
-  magicEraser = async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const base64 = await this.imageToBase64(req.file.path);
-      const input = {
-        image: `data:${req.file.mimetype};base64,${base64}`,
-        prompt: "remove object",
-      };
-
-      const prediction = await this.runModel(models.magicEraser, input);
-      const saved = await this.saveProcessedImage(
-        this.getOutputUrl(prediction.output),
-        "erased"
-      );
-      if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-      res.json({
-        success: true,
-        message: "Object removed",
-        downloadUrl: saved.url,
-        operation: "magic_eraser",
-      });
-    } catch (error) {
-      console.error("[Magic Eraser] Error:", error.response ?? error.message);
-      await this.cleanupOnError(req.file);
-      res
-        .status(500)
-        .json({ error: "Object removal failed", message: (error.response?.detail || error.message) });
-    }
+  // magicEraser (replace existing)
+magicEraser = async (req, res) => {
+  // helper to publish a local file to /public/uploads (reuse from aiArt)
+  const ensurePublicUrlForLocalFile = async (localPath) => {
+    const uploadsDir = path.join(__dirname, "../public/uploads");
+    await fs.mkdir(uploadsDir, { recursive: true });
+    const baseName = path.basename(localPath);
+    const dest = path.join(uploadsDir, baseName);
+    await fs.copyFile(localPath, dest);
+    const baseForPublic =
+      process.env.PUBLIC_BASE_URL ||
+      process.env.API_BASE_URL ||
+      `http://127.0.0.1:${process.env.PORT || 5000}`;
+    return `${baseForPublic.replace(/\/$/, "")}/uploads/${encodeURIComponent(baseName)}`;
   };
+
+  try {
+    // Expect two files: image (required) and mask (required)
+    // If you're using manualUpload multer middleware, files come in req.files array with fieldnames
+    let mainFile = null;
+    let maskFile = null;
+
+    if (req.files && Array.isArray(req.files)) {
+      for (const f of req.files) {
+        if (f.fieldname === "image" || f.fieldname === "main" || f.fieldname === "main_image") mainFile = f;
+        if (f.fieldname === "mask" || f.fieldname === "mask_image") maskFile = f;
+      }
+    } else if (req.file) {
+      // fallback: single-file upload named 'image'
+      mainFile = req.file;
+    }
+
+    if (!mainFile) return res.status(400).json({ error: "No image provided (field 'image')" });
+    if (!maskFile) {
+      // You could allow missing mask to fallback to whole-image removal — but frontend always sends a mask
+      return res.status(400).json({ error: "No mask provided (field 'mask'). Magic eraser needs a mask." });
+    }
+
+    // parse options from body (strings -> numbers)
+    const guidance_scale = typeof req.body.guidance_scale !== "undefined" ? Number(req.body.guidance_scale) : undefined;
+    const controlnet_scale = typeof req.body.controlnet_scale !== "undefined" ? Number(req.body.controlnet_scale) : undefined;
+    const num_inference_steps = typeof req.body.num_inference_steps !== "undefined" ? Number(req.body.num_inference_steps) : undefined;
+    const num_images_per_prompt = typeof req.body.num_images_per_prompt !== "undefined" ? Number(req.body.num_images_per_prompt) : undefined;
+    const prompt = req.body.prompt || "remove object";
+
+    // === Try to make both files reachable by the model (uploadToReplicate -> public URL -> base64) ===
+    let imageUrl, maskUrl;
+
+    // 1) image
+    try {
+      imageUrl = await this.uploadToReplicate(mainFile.path);
+      console.log("[MagicEraser] image uploaded to replicate:", imageUrl);
+    } catch (err) {
+      console.warn("[MagicEraser] upload image failed, publishing to public/uploads or falling back to base64:", err.message);
+      try {
+        imageUrl = await ensurePublicUrlForLocalFile(mainFile.path);
+        console.log("[MagicEraser] image served from public URL:", imageUrl);
+      } catch (pubErr) {
+        const b64 = await this.imageToBase64(mainFile.path);
+        const mimeType = mainFile.mimetype || mime.lookup(mainFile.originalname) || "image/jpeg";
+        imageUrl = `data:${mimeType};base64,${b64}`;
+        console.log("[MagicEraser] image using base64 fallback");
+      }
+    }
+
+    // 2) mask (prefer PNG)
+    try {
+      maskUrl = await this.uploadToReplicate(maskFile.path);
+      console.log("[MagicEraser] mask uploaded to replicate:", maskUrl);
+    } catch (err) {
+      console.warn("[MagicEraser] upload mask failed, publishing to public/uploads or falling back to base64:", err.message);
+      try {
+        maskUrl = await ensurePublicUrlForLocalFile(maskFile.path);
+        console.log("[MagicEraser] mask served from public URL:", maskUrl);
+      } catch (pubErr) {
+        const b64 = await this.imageToBase64(maskFile.path);
+        const mimeType = maskFile.mimetype || mime.lookup(maskFile.originalname) || "image/png";
+        maskUrl = `data:${mimeType};base64,${b64}`;
+        console.log("[MagicEraser] mask using base64 fallback");
+      }
+    }
+
+    // === Build Replicate input. Many Replicate inpainting models expect 'image' + 'mask' or similar keys ===
+    const input = {
+      image: imageUrl,
+      mask: maskUrl,
+      prompt,
+    };
+
+    // attach options only when provided
+    if (typeof guidance_scale !== "undefined") input.guidance_scale = guidance_scale;
+    if (typeof controlnet_scale !== "undefined") input.controlnet_scale = controlnet_scale;
+    if (typeof num_inference_steps !== "undefined") input.num_inference_steps = num_inference_steps;
+    if (typeof num_images_per_prompt !== "undefined") input.num_images_per_prompt = num_images_per_prompt;
+
+    console.log("[MagicEraser] Replicate input prepared (trimmed):", {
+      image: (input.image || "").substring(0, 120) + "...",
+      mask: (input.mask || "").substring(0, 120) + "...",
+      prompt,
+    });
+
+    // Run the model (ensure models.magicEraser exists in your replicateModels)
+    const prediction = await this.runModel(models.magicEraser, input);
+
+    if (prediction.status !== "succeeded") {
+      console.error("[MagicEraser] Prediction final status:", prediction.status, "error:", prediction.error);
+      throw new Error(prediction.error || "Prediction failed");
+    }
+
+    // Extract image url robustly and save locally
+    const resultImageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+    console.log("[MagicEraser] result image url:", resultImageUrl);
+
+    const saved = await this.saveProcessedImage(resultImageUrl, "erased");
+    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+    return res.json({
+      success: true,
+      message: "Object removed",
+      downloadUrl: saved.url,
+      operation: "magic_eraser",
+      prediction_id: prediction?.id || null,
+    });
+  } catch (error) {
+    console.error("[Magic Eraser] Error:", error?.response ?? error?.message ?? error);
+    // cleanup any uploaded temp files
+    if (req.files) {
+      req.files.forEach((file) => this.cleanupOnError(file));
+    } else if (req.file) {
+      this.cleanupOnError(req.file);
+    }
+    return res.status(500).json({
+      error: "Object removal failed",
+      message: error?.message || String(error),
+    });
+  }
+};
+
 
 createAvatar = async (req, res) => {
   try {
