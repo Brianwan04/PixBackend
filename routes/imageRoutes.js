@@ -96,12 +96,13 @@ router.post(
 
 router.post(
   "/magic-eraser",
-  manualUpload, // or upload.fields([{ name: 'image', maxCount: 1 }, { name: 'mask', maxCount: 1 }])
+  // accept both "image" (single) and "mask" (single) uploaded
+  upload.fields([{ name: "image", maxCount: 1 }, { name: "mask", maxCount: 1 }]),
   (req, res, next) => {
-    console.log("[/magic-eraser] Files received:", req.files?.length || 0);
-    console.log("[/magic-eraser] File details:", req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
-    if (req.files && req.files.length > 0) {
-      req.files.forEach(file => trackFileForCleanup(file.path)(req, res, () => {}));
+    if (req.files) {
+      // register for cleanup any uploaded files
+      const all = Object.values(req.files).flat();
+      all.forEach(f => trackFileForCleanup(f.path)(req, res, () => {}));
     }
     next();
   },
