@@ -65,10 +65,15 @@ uploadToReplicate = async (filePath) => {
 
     const form = new FormData();
     // Append as stream (recommended)
-    form.append('file', stream, {
+   /* form.append('file', stream, {
       filename,
       contentType: mimeType,
     });
+*/
+    form.append('content', stream, {
+  filename,
+  contentType: mimeType,
+});
 
     // Prepare headers using form-data helper (includes the correct boundary)
     const formHeaders = form.getHeaders(); // { 'content-type': 'multipart/form-data; boundary=----...' }
