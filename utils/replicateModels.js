@@ -33,7 +33,8 @@ module.exports = {
       name: "Bria Background Generator"
     },
     // placeholders for models you didn't pin — add versions later
-    magicEraser: { id: "sujaykhandekar/object-removal:6461e9e71603c4720a4ea2e0d5fb6290276e08c01a3ce96cb9aa4e0b6ecf4ad4", name: "Remove Object" },
+    magicEraser: { id: "smoretalk/flamel-eraser:826441c948a5792375c071be1dcd02e018592595ae9aa7ca756bf8e04c1bffc1", name: "Remove Object" },
+
     styleTransfer: { id: "justmalhar/sdxl-product-mockups:0efdae8698b59b5ed4f7d043410c20242f5f17905454b3d95099f7bf3ca9aa89", name: "justmalhar/sdxl-product-mockups" },
     mockupGenerator: { id: "mia/mockup-placeholder:latest", name: "Mockup (placeholder)" }
   }
