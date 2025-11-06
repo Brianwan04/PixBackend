@@ -148,6 +148,7 @@ app.use((req, res) => {
       "GET /api/images/styles",
       "POST /api/images/remove-background",
       "POST /api/images/enhance",
+      "POST /api/images/detect-objects",
       "POST /api/images/magic-eraser",
       "POST /api/images/create-avatar",
       "POST /api/images/text-to-image",
@@ -184,7 +185,7 @@ const server = app.listen(PORT, HOST, () => {
     })}`
   );
   console.log(
-    "[Server] Features: Background Remover, AI Enhancer, Magic Eraser, Create Avatar, Text-to-Image, Upscale, Style Transfer, Mockups"
+    "[Server] Features: Background Remover, AI Enhancer, detect-objects, Magic Eraser, Create Avatar, Text-to-Image, Upscale, Style Transfer, Mockups"
   );
   scheduleCleanup();
 });

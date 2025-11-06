@@ -9,6 +9,8 @@ const mime = require("mime-types");
 const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
 require("dotenv").config();
+//const tfnode = require('@tensorflow/tfjs-node');
+//const cocoSsd = require('@tensorflow-models/coco-ssd');
 
 //const mimeType = mime.lookup(filename) || "image/jpeg";
 
@@ -1268,6 +1270,87 @@ aiArt = async (req, res) => {
   }
 };
 
+detectObjects = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image provided (field 'image')" });
+
+    // Lazy-load TF and COCO model to avoid startup cost until first request
+    if (!this.cocoModel) {
+      console.log('[Detect] Loading TFJS and COCO-SSD model (this may take a few seconds)...');
+      // require inside function to avoid crashing environments that don't want TF
+      const tf = require('@tensorflow/tfjs-node');
+      const cocoSsd = require('@tensorflow-models/coco-ssd');
+      // keep references so garbage collector doesn't reclaim them accidentally
+      this.tf = tf;
+      // load model (default mobilenet-backed)
+      this.cocoModel = await cocoSsd.load({ base: 'mobilenet_v2' });
+      console.log('[Detect] Model loaded');
+    }
+
+    const tf = this.tf; // tf node
+    const model = this.cocoModel;
+
+    // read uploaded file buffer
+    const filePath = req.file.path;
+    const buf = await fs.readFile(filePath);
+
+    // decode image to tensor (RGB)
+    const imgTensor = tf.node.decodeImage(buf, 3);
+
+    // run detection
+    // optional: accept min_score from req.body
+    const minScore = Number(req.body.min_score || 0.35);
+    // model.detect returns [{bbox: [x,y,width,height], class, score}, ...]
+    const preds = await model.detect(imgTensor, 20);
+
+    // release tensor memory
+    imgTensor.dispose?.();
+
+    // Get original pixel dims from predictions or via tf (model returns pixel bbox, but we need dims)
+    // tf.node provides image size info via decodeImage shape
+    // If imgTensor was disposed, we can get dims from pred processing by summing bbox; safer to reread dimensions:
+    const probe = this.tf.node.decodeImage(buf, 3);
+    const [height, width] = probe.shape.slice(0, 2);
+    probe.dispose?.();
+
+    // Filter & map to normalized boxes and format
+    const objects = preds
+      .filter(p => p.score >= minScore)
+      .map((p, idx) => {
+        const [x, y, w, h] = p.bbox; // pixels
+        const norm = [
+          Math.max(0, x / width),
+          Math.max(0, y / height),
+          Math.max(0, w / width),
+          Math.max(0, h / height),
+        ];
+        return {
+          id: Date.now() + '-' + idx,
+          label: p.class || p.className || (p.class ? String(p.class) : 'object'),
+          score: typeof p.score === 'number' ? Number(p.score.toFixed(3)) : p.score,
+          bbox: norm, // normalized [x, y, w, h]
+          raw_bbox: p.bbox, // keep original pixels for debugging if needed
+        };
+      });
+
+    // Optionally sort by score desc
+    objects.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    // Respond with detected objects
+    return res.json({
+      success: true,
+      objects,
+      width,
+      height,
+      file: `/uploads/${encodeURIComponent(path.basename(filePath))}`, // location where original file is exposed if you published as uploads
+    });
+  } catch (error) {
+    console.error('[Detect] Error:', error?.message || error);
+    // cleanup the uploaded file if relevant
+    if (req.file) await this.cleanupOnError(req.file).catch(() => {});
+    return res.status(500).json({ error: 'Object detection failed', message: error?.message || String(error) });
+  }
+};
 
   // Get available styles
   getStyles = async (req, res) => {

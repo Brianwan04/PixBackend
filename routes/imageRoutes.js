@@ -46,6 +46,7 @@ router.get("/operations", (req, res) => {
     operations: [
       "background_remover",
       "enhancer",
+      "object_detector",
       "magic_eraser",
       "avatar_creator",
       "text_to_image",
@@ -82,6 +83,16 @@ router.post(
   cleanupTrackedFiles
 );
 
+router.post(
+  "/detect-objects",
+  upload.single("image"), // or manualUpload if you prefer
+  (req, res, next) => {
+    if (req.file) trackFileForCleanup(req.file.path)(req, res, next);
+    else next();
+  },
+  imageController.detectObjects,
+  cleanupTrackedFiles
+);
 
 router.post(
   "/magic-eraser",
