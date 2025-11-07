@@ -8,6 +8,8 @@ const fsExtra = require("fs");
 const mime = require("mime-types");
 const { models } = require("../utils/replicateModels");
 const { sampleStyles } = require("../config/styles");
+const sharp = require("sharp");
+const os = require("os");
 require("dotenv").config();
 //const tfnode = require('@tensorflow/tfjs-node');
 //const cocoSsd = require('@tensorflow-models/coco-ssd');
@@ -604,12 +606,12 @@ getImageUrlFromPredictionOutput = (output) => {
   };
 
   // 3. Magic Eraser
+// 3. Magic Eraser
 magicEraser = async (req, res) => {
   console.log("[/magic-eraser] content-type:", req.headers["content-type"]);
   console.log("[/magic-eraser] files keys:", req.files ? Object.keys(req.files) : null);
   console.log("[/magic-eraser] body keys:", req.body ? Object.keys(req.body) : null);
 
-  // helper: publish local file to /public/uploads so Replicate can GET it
   const ensurePublicUrlForLocalFile = async (localPath) => {
     const uploadsDir = path.join(__dirname, "../public/uploads");
     await fs.mkdir(uploadsDir, { recursive: true });
@@ -624,7 +626,7 @@ magicEraser = async (req, res) => {
   };
 
   try {
-    // 1) Validate inputs: expect multipart fields image + mask (each single file)
+    // Validate inputs
     if (!req.files) {
       return res.status(400).json({ error: "No files uploaded. Expect fields: 'image' and 'mask'." });
     }
@@ -636,51 +638,91 @@ magicEraser = async (req, res) => {
 
     console.log(`[Magic Eraser] Received image: ${imageFile.path}, mask: ${maskFile.path}`);
 
-    // 2) Prepare URLs for model (upload to Replicate preferred, then public fallback, then inline base64)
+    // Helper to prepare a local file for model consumption:
+    // tries uploadToReplicate -> public uploads -> inline base64
     const prepareForModel = async (localPath, mimetypeFallback = "image/png") => {
-      // try uploadToReplicate first
       try {
         const url = await this.uploadToReplicate(localPath);
         return url;
       } catch (uErr) {
-        console.warn("[Magic Eraser] uploadToReplicate failed, trying public fallback:", uErr?.message || uErr);
+        console.warn("[Magic Eraser] uploadToReplicate failed:", uErr?.message || uErr);
         try {
-          return await ensurePublicUrlForLocalFile(localPath);
+          const pub = await ensurePublicUrlForLocalFile(localPath);
+          return pub;
         } catch (pubErr) {
-          console.warn("[Magic Eraser] public publish failed, inlining base64:", pubErr?.message || pubErr);
+          console.warn("[Magic Eraser] public publish failed:", pubErr?.message || pubErr);
           const b64 = await this.imageToBase64(localPath);
           return `data:${mimetypeFallback};base64,${b64}`;
         }
       }
     };
 
-    const imageForModel = await prepareForModel(imageFile.path, imageFile.mimetype || "image/jpeg");
-    const maskForModel = await prepareForModel(maskFile.path, maskFile.mimetype || "image/png");
+    // Read image metadata (we need width/height for mask normalization)
+    let imageWidth = null;
+    let imageHeight = null;
+    try {
+      const meta = await sharp(imageFile.path).metadata();
+      imageWidth = meta.width;
+      imageHeight = meta.height;
+      console.log(`[Magic Eraser] source image size: ${imageWidth}x${imageHeight}`);
+    } catch (mErr) {
+      console.warn("[Magic Eraser] failed to read image metadata, continuing without resize:", mErr.message);
+    }
 
-    // 3) Build model input with the exact keys expected by the simple model: { image, mask }
+    // Normalize mask to EXACT same size as image and make binary white-on-black PNG
+    let normalizedMaskPath = maskFile.path;
+    try {
+      if (imageWidth && imageHeight) {
+        const tmpName = `mask-normalized-${Date.now()}.png`;
+        const tmpPath = path.join(os.tmpdir(), tmpName);
+
+        await sharp(maskFile.path)
+          .resize(imageWidth, imageHeight, { fit: "fill" }) // ensure exact dimensions
+          .flatten({ background: { r: 0, g: 0, b: 0 } }) // transparent -> black
+          .greyscale()
+          .threshold(128) // binary
+          .png()
+          .toFile(tmpPath);
+
+        normalizedMaskPath = tmpPath;
+        console.log("[Magic Eraser] normalized mask saved to:", normalizedMaskPath);
+
+        // register for cleanup
+        if (!req.filesToCleanup) req.filesToCleanup = [];
+        req.filesToCleanup.push(normalizedMaskPath);
+      } else {
+        console.warn("[Magic Eraser] image size unknown; skipping server mask resize (model likely errors if sizes mismatch)");
+      }
+    } catch (normErr) {
+      console.warn("[Magic Eraser] mask normalization failed - using original mask. Err:", normErr.message);
+      normalizedMaskPath = maskFile.path;
+    }
+
+    // Prepare image & mask for model (upload or public or inline)
+    const imageForModel = await prepareForModel(imageFile.path, imageFile.mimetype || "image/jpeg");
+    const maskForModel = await prepareForModel(normalizedMaskPath, maskFile.mimetype || "image/png");
+
+    // Build input with EXACT keys expected by the "simple" model
     const input = { image: imageForModel, mask: maskForModel };
 
     console.log("[Magic Eraser] Calling model with keys:", Object.keys(input));
-
-    // 4) Run model (runModel handles version resolution / prediction wait)
     const prediction = await this.runModel(models.magicEraser, input);
 
     console.log("[Magic Eraser] Prediction (full):", JSON.stringify(prediction, null, 2));
 
-    // 5) Ensure prediction succeeded
     if (!prediction || prediction.status !== "succeeded") {
       const errMsg = prediction?.error || (prediction?.output && JSON.stringify(prediction.output)) || "Unknown prediction failure";
       console.error("[Magic Eraser] Prediction did not succeed:", errMsg);
       throw new Error(`Prediction failed: ${errMsg}`);
     }
 
-    // 6) Extract output URL — robust helper used
+    // Extract result URL robustly
     let resultUrl;
     try {
       resultUrl = this.getImageUrlFromPredictionOutput(prediction.output);
     } catch (ex) {
-      // some simple models return a single string in prediction.output (not array/object)
-      if (typeof prediction.output === "string" && prediction.output.startsWith("http")) {
+      // fallback: some simple models return a single string in prediction.output
+      if (typeof prediction.output === "string" && (prediction.output.startsWith("http") || prediction.output.startsWith("data:"))) {
         resultUrl = prediction.output;
       } else {
         console.error("[Magic Eraser] No image URL found in prediction.output:", JSON.stringify(prediction.output).slice(0, 300));
@@ -693,7 +735,7 @@ magicEraser = async (req, res) => {
       throw new Error("Extracted result URL is invalid");
     }
 
-    // 7) Save result locally and return public path
+    // Save the processed image locally
     const saved = await this.saveProcessedImage(resultUrl, "erased");
     if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
 
@@ -715,6 +757,7 @@ magicEraser = async (req, res) => {
     return res.status(500).json({ error: "Object removal failed", message: (error?.response?.detail || error?.message || String(error)) });
   }
 };
+
 
 
 createAvatar = async (req, res) => {
