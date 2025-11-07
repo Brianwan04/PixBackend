@@ -708,20 +708,46 @@ magicEraser = async (req, res) => {
       input.num_inference_steps = Number(req.body.num_inference_steps);
 
     // Run model
-    const prediction = await this.runModel(models.magicEraser, input);
+const prediction = await this.runModel(models.magicEraser, input);
 
-    const saved = await this.saveProcessedImage(
-      this.getOutputUrl(prediction.output),
-      "erased"
-    );
-    if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
-    res.json({
-      success: true,
-      message: "Object removed",
-      downloadUrl: saved.url,
-      operation: "magic_eraser",
-      prediction_id: prediction?.id || null,
-    });
+// DEBUG: always log prediction in case model returned text or unexpected shape
+console.log('[Magic Eraser] Prediction (full):', JSON.stringify(prediction, null, 2));
+
+// Ensure prediction succeeded
+if (prediction.status !== 'succeeded') {
+  // include any useful fields
+  const errMsg = prediction.error || (prediction.output && JSON.stringify(prediction.output)) || 'Unknown prediction failure';
+  console.error('[Magic Eraser] Prediction did not succeed:', errMsg);
+  throw new Error(`Prediction failed: ${errMsg}`);
+}
+
+// Extract a real image URL (this will throw if none found)
+let resultImageUrl;
+try {
+  resultImageUrl = this.getImageUrlFromPredictionOutput(prediction.output);
+} catch (ex) {
+  console.error('[Magic Eraser] No image URL found in prediction.output:', JSON.stringify(prediction.output).slice(0, 200));
+  throw new Error('Model returned no image URL (prediction.output unexpected)');
+}
+
+// Extra sanity: ensure it's an http(s) or data: URL
+if (typeof resultImageUrl !== 'string' || (!resultImageUrl.startsWith('http') && !resultImageUrl.startsWith('data:'))) {
+  console.error('[Magic Eraser] Extracted resultImageUrl invalid:', resultImageUrl);
+  throw new Error('Extracted result URL is invalid: ' + String(resultImageUrl).slice(0, 200));
+}
+
+// Save image locally (will fetch remote or decode data:)
+const saved = await this.saveProcessedImage(resultImageUrl, 'erased');
+if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
+
+res.json({
+  success: true,
+  message: "Object removed",
+  downloadUrl: saved.url,
+  operation: "magic_eraser",
+  prediction_id: prediction?.id || null,
+});
+
   } catch (error) {
     console.error(
       "[Magic Eraser] Error:",
