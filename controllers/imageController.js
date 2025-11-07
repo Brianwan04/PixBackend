@@ -606,12 +606,12 @@ getImageUrlFromPredictionOutput = (output) => {
   };
 
   // 3. Magic Eraser
-// 3. Magic Eraser
 magicEraser = async (req, res) => {
   console.log("[/magic-eraser] content-type:", req.headers["content-type"]);
   console.log("[/magic-eraser] files keys:", req.files ? Object.keys(req.files) : null);
   console.log("[/magic-eraser] body keys:", req.body ? Object.keys(req.body) : null);
 
+  // helper: publish local file to /public/uploads so Replicate can GET it
   const ensurePublicUrlForLocalFile = async (localPath) => {
     const uploadsDir = path.join(__dirname, "../public/uploads");
     await fs.mkdir(uploadsDir, { recursive: true });
@@ -625,8 +625,26 @@ magicEraser = async (req, res) => {
     return `${baseForPublic.replace(/\/$/, "")}/uploads/${encodeURIComponent(baseName)}`;
   };
 
+  // helper: prepare local file for model (upload -> public -> inline base64)
+  const prepareForModel = async (localPath, mimetypeFallback = "image/png") => {
+    // try uploadToReplicate first
+    try {
+      const url = await this.uploadToReplicate(localPath);
+      return url;
+    } catch (uErr) {
+      console.warn("[Magic Eraser] uploadToReplicate failed for", localPath, uErr?.message || uErr);
+      try {
+        return await ensurePublicUrlForLocalFile(localPath);
+      } catch (pubErr) {
+        console.warn("[Magic Eraser] public fallback failed for", localPath, pubErr?.message || pubErr);
+        const b64 = await this.imageToBase64(localPath);
+        return `data:${mimetypeFallback};base64,${b64}`;
+      }
+    }
+  };
+
   try {
-    // Validate inputs
+    // 1) Validate inputs: expect multipart fields image + mask (each single file)
     if (!req.files) {
       return res.status(400).json({ error: "No files uploaded. Expect fields: 'image' and 'mask'." });
     }
@@ -638,91 +656,112 @@ magicEraser = async (req, res) => {
 
     console.log(`[Magic Eraser] Received image: ${imageFile.path}, mask: ${maskFile.path}`);
 
-    // Helper to prepare a local file for model consumption:
-    // tries uploadToReplicate -> public uploads -> inline base64
-    const prepareForModel = async (localPath, mimetypeFallback = "image/png") => {
-      try {
-        const url = await this.uploadToReplicate(localPath);
-        return url;
-      } catch (uErr) {
-        console.warn("[Magic Eraser] uploadToReplicate failed:", uErr?.message || uErr);
-        try {
-          const pub = await ensurePublicUrlForLocalFile(localPath);
-          return pub;
-        } catch (pubErr) {
-          console.warn("[Magic Eraser] public publish failed:", pubErr?.message || pubErr);
-          const b64 = await this.imageToBase64(localPath);
-          return `data:${mimetypeFallback};base64,${b64}`;
-        }
-      }
-    };
-
-    // Read image metadata (we need width/height for mask normalization)
+    // read source metadata (width/height) if possible
     let imageWidth = null;
     let imageHeight = null;
     try {
       const meta = await sharp(imageFile.path).metadata();
       imageWidth = meta.width;
       imageHeight = meta.height;
-      console.log(`[Magic Eraser] source image size: ${imageWidth}x${imageHeight}`);
+      console.log(`[Magic Eraser] source image size: ${imageWidth}x${imageHeight}, channels=${meta.channels}`);
     } catch (mErr) {
-      console.warn("[Magic Eraser] failed to read image metadata, continuing without resize:", mErr.message);
+      console.warn("[Magic Eraser] failed to read image metadata, continuing:", mErr.message);
     }
 
-    // Normalize mask to EXACT same size as image and make binary white-on-black PNG
-    let normalizedMaskPath = maskFile.path;
+    // --- Normalize the source image: ensure 3-channel RGB (no alpha) and (optionally) match mask dims ---
+    const normalizedImagePath = path.join(os.tmpdir(), `img-normalized-${Date.now()}.jpg`);
+    try {
+      const pipeline = sharp(imageFile.path);
+
+      // If we have dims, resize to those exact dims to ensure mask alignment
+      if (imageWidth && imageHeight) {
+        pipeline.resize(imageWidth, imageHeight, { fit: "fill" });
+      }
+
+      // flatten removes alpha by compositing over white (you can change background to black if preferred)
+      await pipeline
+        .flatten({ background: { r: 255, g: 255, b: 255 } }) // remove alpha -> RGB
+        .jpeg({ quality: 92 })
+        .toFile(normalizedImagePath);
+
+      // log metadata for sanity
+      try {
+        const normMeta = await sharp(normalizedImagePath).metadata();
+        console.log(`[Magic Eraser] normalized image metadata: width=${normMeta.width}, height=${normMeta.height}, channels=${normMeta.channels}`);
+      } catch (merr) {
+        console.warn("[Magic Eraser] failed to read normalized image metadata:", merr.message);
+      }
+
+      if (!req.filesToCleanup) req.filesToCleanup = [];
+      req.filesToCleanup.push(normalizedImagePath);
+    } catch (imgNormErr) {
+      console.warn("[Magic Eraser] failed to normalize source image, using original:", imgNormErr.message);
+      // if normalization fails, fall back to original imageFile.path
+    }
+
+    // --- Normalize mask: resize to image dims, flatten to black background, threshold to binary white-on-black PNG ---
+    let normalizedMaskPath = maskFile.path; // default to original
     try {
       if (imageWidth && imageHeight) {
         const tmpName = `mask-normalized-${Date.now()}.png`;
         const tmpPath = path.join(os.tmpdir(), tmpName);
 
         await sharp(maskFile.path)
-          .resize(imageWidth, imageHeight, { fit: "fill" }) // ensure exact dimensions
-          .flatten({ background: { r: 0, g: 0, b: 0 } }) // transparent -> black
+          .resize(imageWidth, imageHeight, { fit: "fill" })
+          .flatten({ background: { r: 0, g: 0, b: 0 } }) // ensure opaque black background
           .greyscale()
-          .threshold(128) // binary
+          .threshold(128) // binary threshold -> white (foreground) vs black (background)
           .png()
           .toFile(tmpPath);
 
+        console.log("[Magic Eraser] normalized mask saved to:", tmpPath);
         normalizedMaskPath = tmpPath;
-        console.log("[Magic Eraser] normalized mask saved to:", normalizedMaskPath);
-
-        // register for cleanup
         if (!req.filesToCleanup) req.filesToCleanup = [];
         req.filesToCleanup.push(normalizedMaskPath);
       } else {
-        console.warn("[Magic Eraser] image size unknown; skipping server mask resize (model likely errors if sizes mismatch)");
+        console.warn("[Magic Eraser] image dimensions unknown - skipping server-side mask resize (mask left as uploaded)");
       }
     } catch (normErr) {
-      console.warn("[Magic Eraser] mask normalization failed - using original mask. Err:", normErr.message);
+      console.warn("[Magic Eraser] failed to normalize mask, using original mask. err:", normErr.message);
       normalizedMaskPath = maskFile.path;
     }
 
-    // Prepare image & mask for model (upload or public or inline)
-    const imageForModel = await prepareForModel(imageFile.path, imageFile.mimetype || "image/jpeg");
+    // If normalizedImagePath exists, prefer it; otherwise fallback to original imageFile.path
+    const imageLocalToUse = (await fs
+      .access(path.join(os.tmpdir(), path.basename(normalizedImagePath)))
+      .then(() => normalizedImagePath)
+      .catch(() => null)) || (await fs.access(imageFile.path).then(() => imageFile.path).catch(() => null));
+
+    // However, above access check may be brittle in some environments; choose normalizedImagePath if it was created
+    const finalImageLocal = (await fs
+      .access(normalizedImagePath).then(() => normalizedImagePath).catch(() => imageFile.path));
+
+    // 2) Prepare both files for the model (upload -> public -> inline)
+    const imageForModel = await prepareForModel(finalImageLocal, imageFile.mimetype || "image/jpeg");
     const maskForModel = await prepareForModel(normalizedMaskPath, maskFile.mimetype || "image/png");
 
-    // Build input with EXACT keys expected by the "simple" model
+    // 3) Build model input with the exact keys expected by the simple model: { image, mask }
     const input = { image: imageForModel, mask: maskForModel };
-
     console.log("[Magic Eraser] Calling model with keys:", Object.keys(input));
+
+    // 4) Run model (runModel handles version resolution / prediction wait)
     const prediction = await this.runModel(models.magicEraser, input);
 
     console.log("[Magic Eraser] Prediction (full):", JSON.stringify(prediction, null, 2));
 
+    // 5) Ensure prediction succeeded
     if (!prediction || prediction.status !== "succeeded") {
       const errMsg = prediction?.error || (prediction?.output && JSON.stringify(prediction.output)) || "Unknown prediction failure";
       console.error("[Magic Eraser] Prediction did not succeed:", errMsg);
       throw new Error(`Prediction failed: ${errMsg}`);
     }
 
-    // Extract result URL robustly
+    // 6) Extract output URL — robust helper used
     let resultUrl;
     try {
       resultUrl = this.getImageUrlFromPredictionOutput(prediction.output);
     } catch (ex) {
-      // fallback: some simple models return a single string in prediction.output
-      if (typeof prediction.output === "string" && (prediction.output.startsWith("http") || prediction.output.startsWith("data:"))) {
+      if (typeof prediction.output === "string" && prediction.output.startsWith("http")) {
         resultUrl = prediction.output;
       } else {
         console.error("[Magic Eraser] No image URL found in prediction.output:", JSON.stringify(prediction.output).slice(0, 300));
@@ -735,7 +774,7 @@ magicEraser = async (req, res) => {
       throw new Error("Extracted result URL is invalid");
     }
 
-    // Save the processed image locally
+    // 7) Save result locally and return public path
     const saved = await this.saveProcessedImage(resultUrl, "erased");
     if (req.filesToCleanup) req.filesToCleanup.push(saved.path);
 
@@ -757,6 +796,7 @@ magicEraser = async (req, res) => {
     return res.status(500).json({ error: "Object removal failed", message: (error?.response?.detail || error?.message || String(error)) });
   }
 };
+
 
 
 
